@@ -809,6 +809,23 @@ LMDBBackend::LMDBBackend(const std::string& suffix)
   d_dolog = ::arg().mustDo("query-logging");
 }
 
+LMDBBackend::~LMDBBackend()
+{
+  // LMDB internals require that, if we have multiple transactions active,
+  // we destroy them in the reverse order of their creation, thus we can't
+  // let the default destructor take care of d_rotxn and d_rwtxn.
+  if (d_txnorder) {
+    // RO transaction more recent than RW transaction
+    d_rotxn.reset();
+    d_rwtxn.reset();
+  }
+  else {
+    // RW transaction more recent than RO transaction
+    d_rwtxn.reset();
+    d_rotxn.reset();
+  }
+}
+
 namespace boost
 {
 namespace serialization
@@ -1073,6 +1090,7 @@ bool LMDBBackend::startTransaction(const DNSName& domain, int domain_id)
     throw DBException("Attempt to start a transaction while one was open already");
   }
   d_rwtxn = getRecordsRWTransaction(real_id);
+  d_txnorder = false;
 
   d_transactiondomain = domain;
   d_transactiondomainid = real_id;
@@ -1443,16 +1461,14 @@ bool LMDBBackend::list(const DNSName& target, int /* id */, bool include_disable
   }
 
   d_rotxn = getRecordsROTransaction(di.id, d_rwtxn);
+  d_txnorder = true;
   d_getcursor = std::make_shared<MDBROCursor>(d_rotxn->txn->getCursor(d_rotxn->db->dbi));
 
   compoundOrdername co;
   d_matchkey = co(di.id);
 
   MDBOutVal key, val;
-  auto a = d_getcursor->lower_bound(d_matchkey, key, val);
-  auto b0 = key.getNoStripHeader<StringView>();
-  auto b = b0.rfind(d_matchkey, 0);
-  if (a || b != 0) {
+  if (d_getcursor->prefix(d_matchkey, key, val) != 0) {
     d_getcursor.reset();
   }
 
@@ -1503,6 +1519,7 @@ void LMDBBackend::lookup(const QType& type, const DNSName& qdomain, int zoneId, 
   }
   // cout<<"get will look for "<<relqname<< " in zone "<<hunt<<" with id "<<zoneId<<" and type "<<type.toString()<<endl;
   d_rotxn = getRecordsROTransaction(zoneId, d_rwtxn);
+  d_txnorder = true;
 
   compoundOrdername co;
   d_getcursor = std::make_shared<MDBROCursor>(d_rotxn->txn->getCursor(d_rotxn->db->dbi));
@@ -1514,7 +1531,7 @@ void LMDBBackend::lookup(const QType& type, const DNSName& qdomain, int zoneId, 
     d_matchkey = co(zoneId, relqname, type.getCode());
   }
 
-  if (d_getcursor->lower_bound(d_matchkey, key, val) || key.getNoStripHeader<StringView>().rfind(d_matchkey, 0) != 0) {
+  if (d_getcursor->prefix(d_matchkey, key, val) != 0) {
     d_getcursor.reset();
     if (d_dolog) {
       g_log << Logger::Warning << "Query " << ((long)(void*)this) << ": " << d_dtime.udiffNoReset() << " us to execute (found nothing)" << endl;
@@ -1552,7 +1569,7 @@ bool LMDBBackend::get(DNSZoneRecord& zr)
 
       if (zr.dr.d_type == QType::NSEC3) {
         // Hit a magic NSEC3 skipping
-        if (d_getcursor->next(d_currentKey, d_currentVal) || d_currentKey.getNoStripHeader<StringView>().rfind(d_matchkey, 0) != 0) {
+        if (d_getcursor->next(d_currentKey, d_currentVal) != 0) {
           // cerr<<"resetting d_getcursor 1"<<endl;
           d_getcursor.reset();
         }
@@ -1580,7 +1597,7 @@ bool LMDBBackend::get(DNSZoneRecord& zr)
 
       if (d_currentrrsetpos >= d_currentrrset.size()) {
         d_currentrrset.clear(); // will invalidate lrr
-        if (d_getcursor->next(d_currentKey, d_currentVal) || d_currentKey.getNoStripHeader<StringView>().rfind(d_matchkey, 0) != 0) {
+        if (d_getcursor->next(d_currentKey, d_currentVal) != 0) {
           // cerr<<"resetting d_getcursor 2"<<endl;
           d_getcursor.reset();
         }
@@ -2467,7 +2484,7 @@ bool LMDBBackend::updateDNSSECOrderNameAndAuth(uint32_t domain_id, const DNSName
 
   auto cursor = txn->txn->getCursor(txn->db->dbi);
   MDBOutVal key, val;
-  if (cursor.lower_bound(matchkey, key, val)) {
+  if (cursor.prefix(matchkey, key, val) != 0) {
     // cout << "Could not find anything"<<endl;
     return false;
   }
@@ -2475,7 +2492,7 @@ bool LMDBBackend::updateDNSSECOrderNameAndAuth(uint32_t domain_id, const DNSName
   bool hasOrderName = !ordername.empty();
   bool needNSEC3 = hasOrderName;
 
-  for (; key.getNoStripHeader<StringView>().rfind(matchkey, 0) == 0;) {
+  do {
     vector<LMDBResourceRecord> lrrs;
 
     if (co.getQType(key.getNoStripHeader<StringView>()) != QType::NSEC3) {
@@ -2501,9 +2518,7 @@ bool LMDBBackend::updateDNSSECOrderNameAndAuth(uint32_t domain_id, const DNSName
       }
     }
 
-    if (cursor.next(key, val))
-      break;
-  }
+  } while (cursor.next(key, val) == 0);
 
   bool del = false;
   LMDBResourceRecord lrr;
