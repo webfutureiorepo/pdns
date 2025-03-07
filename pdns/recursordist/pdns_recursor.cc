@@ -59,6 +59,9 @@ thread_local std::unique_ptr<boost::circular_buffer<pair<DNSName, uint16_t>>> t_
 thread_local std::shared_ptr<NetmaskGroup> t_allowFrom;
 thread_local std::shared_ptr<NetmaskGroup> t_allowNotifyFrom;
 thread_local std::shared_ptr<notifyset_t> t_allowNotifyFor;
+thread_local std::shared_ptr<NetmaskGroup> t_proxyProtocolACL;
+thread_local std::shared_ptr<std::set<ComboAddress>> t_proxyProtocolExceptions;
+
 __thread struct timeval g_now; // timestamp, updated (too) frequently
 
 using listenSocketsAddresses_t = map<int, ComboAddress>; // is shared across all threads right now
@@ -1185,7 +1188,7 @@ void startDoResolve(void* arg) // NOLINT(readability-function-cognitive-complexi
 
     if (!g_quiet || tracedQuery) {
       if (!g_slogStructured) {
-        g_log << Logger::Warning << RecThreadInfo::id() << " [" << g_multiTasker->getTid() << "/" << g_multiTasker->numProcesses() << "] " << (comboWriter->d_tcp ? "TCP " : "") << "question for '" << comboWriter->d_mdp.d_qname << "|"
+        g_log << Logger::Warning << RecThreadInfo::thread_local_id() << " [" << g_multiTasker->getTid() << "/" << g_multiTasker->numProcesses() << "] " << (comboWriter->d_tcp ? "TCP " : "") << "question for '" << comboWriter->d_mdp.d_qname << "|"
               << QType(comboWriter->d_mdp.d_qtype) << "' from " << comboWriter->getRemote();
         if (!comboWriter->d_ednssubnet.getSource().empty()) {
           g_log << " (ecs " << comboWriter->d_ednssubnet.getSource().toString() << ")";
@@ -1850,7 +1853,7 @@ void startDoResolve(void* arg) // NOLINT(readability-function-cognitive-complexi
       pbMessage.setDeviceName(dnsQuestion.deviceName);
       pbMessage.setToPort(comboWriter->d_destination.getPort());
       pbMessage.addPolicyTags(comboWriter->d_gettagPolicyTags);
-      pbMessage.setWorkerId(RecThreadInfo::id());
+      pbMessage.setWorkerId(RecThreadInfo::thread_local_id());
       pbMessage.setPacketCacheHit(false);
       pbMessage.setOutgoingQueries(resolver.d_outqueries);
       for (const auto& metaValue : dnsQuestion.meta) {
@@ -1885,7 +1888,7 @@ void startDoResolve(void* arg) // NOLINT(readability-function-cognitive-complexi
     uint64_t spentUsec = uSec(resolver.getNow() - comboWriter->d_now);
     if (!g_quiet) {
       if (!g_slogStructured) {
-        g_log << Logger::Error << RecThreadInfo::id() << " [" << g_multiTasker->getTid() << "/" << g_multiTasker->numProcesses() << "] answer to " << (comboWriter->d_mdp.d_header.rd ? "" : "non-rd ") << "question '" << comboWriter->d_mdp.d_qname << "|" << DNSRecordContent::NumberToType(comboWriter->d_mdp.d_qtype);
+        g_log << Logger::Error << RecThreadInfo::thread_local_id() << " [" << g_multiTasker->getTid() << "/" << g_multiTasker->numProcesses() << "] answer to " << (comboWriter->d_mdp.d_header.rd ? "" : "non-rd ") << "question '" << comboWriter->d_mdp.d_qname << "|" << DNSRecordContent::NumberToType(comboWriter->d_mdp.d_qtype);
         g_log << "': " << ntohs(packetWriter.getHeader()->ancount) << " answers, " << ntohs(packetWriter.getHeader()->arcount) << " additional, took " << resolver.d_outqueries << " packets, " << resolver.d_totUsec / 1000.0 << " netw ms, " << static_cast<double>(spentUsec) / 1000.0 << " tot ms, " << resolver.d_throttledqueries << " throttled, " << resolver.d_timeouts << " timeouts, " << resolver.d_tcpoutqueries << "/" << resolver.d_dotoutqueries << " tcp/dot connections, rcode=" << res;
 
         if (!shouldNotValidate && resolver.isDNSSECValidationRequested()) {
@@ -2150,7 +2153,16 @@ void requestWipeCaches(const DNSName& canon)
 
 bool expectProxyProtocol(const ComboAddress& from, const ComboAddress& listenAddress)
 {
-  return g_proxyProtocolACL.match(from) && g_proxyProtocolExceptions.count(listenAddress) == 0;
+  if (!t_proxyProtocolACL) {
+    return false;
+  }
+  if (t_proxyProtocolACL->match(from)) {
+    if (!t_proxyProtocolExceptions) {
+      return true;
+    }
+    return t_proxyProtocolExceptions->count(listenAddress) == 0;
+  }
+  return false;
 }
 
 // fromaddr: the address the query is coming from
@@ -2437,7 +2449,8 @@ static string* doProcessUDPQuestion(const std::string& question, const ComboAddr
 
 static void handleNewUDPQuestion(int fileDesc, FDMultiplexer::funcparam_t& /* var */) // NOLINT(readability-function-cognitive-complexity): https://github.com/PowerDNS/pdns/issues/12791
 {
-  static const size_t maxIncomingQuerySize = g_proxyProtocolACL.empty() ? 512 : (512 + g_proxyProtocolMaximumSize);
+  const bool proxyActive = t_proxyProtocolACL && !t_proxyProtocolACL->empty();
+  static const size_t maxIncomingQuerySize = !proxyActive ? 512 : (512 + g_proxyProtocolMaximumSize);
   static thread_local std::string data;
   ComboAddress fromaddr; // the address the query is coming from
   ComboAddress source; // the address we assume the query is coming from, might be set by proxy protocol

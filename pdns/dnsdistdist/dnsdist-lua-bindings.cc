@@ -249,6 +249,7 @@ void setupLuaBindings(LuaContext& luaCtx, bool client, bool configCheck)
   luaCtx.registerFunction<string (ComboAddress::*)() const>("__tostring", [](const ComboAddress& addr) { return addr.toString(); });
   luaCtx.registerFunction<string (ComboAddress::*)() const>("toString", [](const ComboAddress& addr) { return addr.toString(); });
   luaCtx.registerFunction<string (ComboAddress::*)() const>("toStringWithPort", [](const ComboAddress& addr) { return addr.toStringWithPort(); });
+  luaCtx.registerFunction<string (ComboAddress::*)() const>("getRaw", [](const ComboAddress& addr) { return addr.toByteString(); });
   luaCtx.registerFunction<uint16_t (ComboAddress::*)() const>("getPort", [](const ComboAddress& addr) { return ntohs(addr.sin4.sin_port); });
   luaCtx.registerFunction<void (ComboAddress::*)(unsigned int)>("truncate", [](ComboAddress& addr, unsigned int bits) { addr.truncate(bits); });
   luaCtx.registerFunction<bool (ComboAddress::*)() const>("isIPv4", [](const ComboAddress& addr) { return addr.sin4.sin_family == AF_INET; });
@@ -579,7 +580,7 @@ void setupLuaBindings(LuaContext& luaCtx, bool client, bool configCheck)
   luaCtx.registerFunction<void (std::shared_ptr<BPFFilter>::*)(const DNSName& qname, boost::optional<uint16_t> qtype, boost::optional<uint32_t> action)>("blockQName", [](const std::shared_ptr<BPFFilter>& bpf, const DNSName& qname, boost::optional<uint16_t> qtype, boost::optional<uint32_t> action) {
     if (bpf) {
       if (!action) {
-        return bpf->block(qname, BPFFilter::MatchAction::Drop, qtype ? *qtype : 255);
+        return bpf->block(qname, BPFFilter::MatchAction::Drop, qtype ? *qtype : 65535);
       }
       BPFFilter::MatchAction match{};
 
@@ -596,7 +597,7 @@ void setupLuaBindings(LuaContext& luaCtx, bool client, bool configCheck)
       default:
         throw std::runtime_error("Unsupported action for BPFFilter::blockQName");
       }
-      return bpf->block(qname, match, qtype ? *qtype : 255);
+      return bpf->block(qname, match, qtype ? *qtype : 65535);
     }
   });
 
@@ -630,7 +631,7 @@ void setupLuaBindings(LuaContext& luaCtx, bool client, bool configCheck)
   });
   luaCtx.registerFunction<void (std::shared_ptr<BPFFilter>::*)(const DNSName& qname, boost::optional<uint16_t> qtype)>("unblockQName", [](const std::shared_ptr<BPFFilter>& bpf, const DNSName& qname, boost::optional<uint16_t> qtype) {
     if (bpf) {
-      return bpf->unblock(qname, qtype ? *qtype : 255);
+      return bpf->unblock(qname, qtype ? *qtype : 65535);
     }
   });
 

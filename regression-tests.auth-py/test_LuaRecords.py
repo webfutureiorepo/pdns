@@ -112,9 +112,18 @@ usa-slowcheck IN   LUA    A   ( ";settings={{stringmatch='Programming in Lua', i
                                 "return ifurlup('http://www.lua.org:8080/', "
                                 "USAips, settings)                          ")
 
+usa-failincomplete IN LUA A   ( ";settings={{stringmatch='Programming in Lua', failOnIncompleteCheck='true'}} "
+                                "USAips={{'192.168.42.105'}}"
+                                "return ifurlup('http://www.lua.org:8080/', "
+                                "USAips, settings)                          ")
+
 mix.ifurlup  IN    LUA    A   ("ifurlup('http://www.other.org:8080/ping.json', "
                                "{{ '192.168.42.101', '{prefix}.101' }},        "
                                "{{ stringmatch='pong' }})                      ")
+
+usa-404      IN    LUA    A   ( ";include('config')                         "
+                                "return ifurlup('http://www.lua.org:8080/404', "
+                                "USAips, {{ httpcode='404' }})              ")
 
 ifurlextup   IN    LUA    A   "ifurlextup({{{{['192.168.0.1']='http://{prefix}.101:8080/404',['192.168.0.2']='http://{prefix}.102:8080/404'}}, {{['192.168.0.3']='http://{prefix}.101:8080/'}}}})"
 
@@ -458,6 +467,34 @@ class TestLuaRecords(BaseLuaTest):
         self.assertAnyRRsetInAnswer(res, all_rrs)
 
         # the timeout in the LUA health checker is 1 second, so we make sure to wait slightly longer here
+        time.sleep(3)
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertAnyRRsetInAnswer(res, reachable_rrs)
+
+    def testIfurlupHTTPCode(self):
+        """
+        Basic ifurlup() test, with non-default HTTP code
+        """
+        reachable = [
+            '{prefix}.103'.format(prefix=self._PREFIX)
+        ]
+        unreachable = ['192.168.42.105']
+        ips = reachable + unreachable
+        all_rrs = []
+        reachable_rrs = []
+        for ip in ips:
+            rr = dns.rrset.from_text('usa-404.example.org.', 0, dns.rdataclass.IN, 'A', ip)
+            all_rrs.append(rr)
+            if ip in reachable:
+                reachable_rrs.append(rr)
+
+        query = dns.message.make_query('usa-404.example.org', 'A')
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertAnyRRsetInAnswer(res, all_rrs)
+
+        # the timeout in the LUA health checker is 2 second, so we make sure to wait slightly longer here
         time.sleep(3)
         res = self.sendUDPQuery(query)
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
@@ -1046,6 +1083,8 @@ class TestLuaRecords(BaseLuaTest):
                 "ip40414243": "64.65.66.67",
                 "ipp40414243": "64.65.66.67",
                 "ip4041424": "0.0.0.0",
+                "ip-441424": "0.0.0.0",
+                "ip-5abcdef": "0.0.0.0",
                 "host64-22-33-44": "64.22.33.44",
                 "2.2.2.2": "0.0.0.0"   # filtered
             }),
@@ -1057,7 +1096,8 @@ class TestLuaRecords(BaseLuaTest):
                 "2001--db8" : "2001::db8",
                 "20010002000300040005000600070db8" : "2001:2:3:4:5:6:7:db8",
                 "blabla20010002000300040005000600070db8" : "2001:2:3:4:5:6:7:db8",
-                "4000-db8--1" : "fe80::1"   # filtered, with fallback address override
+                "4000-db8--1" : "fe80::1",   # filtered, with fallback address override
+                "l1.l2.l3.l4.l5.l6.l7.l8" : "fe80::1"
             }),
             ".createreverse6.example.org." : (dns.rdatatype.PTR, {
                 "8.b.d.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2" : "2001--db8.example.com.",
@@ -1199,6 +1239,9 @@ class TestLuaRecords(BaseLuaTest):
 
 
 class TestLuaRecordsShared(TestLuaRecords):
+    # The lua-records-exec-limit parameter needs to be increased from the
+    # default value of 1000, for the testGeoIPQueryAttribute test would hit
+    # the limit.
     _config_template = """
 geoip-database-files=../modules/geoipbackend/regression-tests/GeoLiteCity.mmdb
 edns-subnet-processing=yes
@@ -1207,6 +1250,7 @@ any-to-tcp=no
 enable-lua-records=shared
 lua-records-insert-whitespace=yes
 lua-health-checks-interval=1
+lua-records-exec-limit=1500
 """
 
     def testCounter(self):
@@ -1337,6 +1381,54 @@ lua-health-checks-interval=5
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertAnyRRsetInAnswer(res, reachable_rrs)
         self.assertNoneRRsetInAnswer(res, unreachable_rrs)
+
+    def testIfurlupFailOnIncompleteCheck(self):
+        """
+        Simple ifurlup() test with failOnIncompleteCheck option set.
+        """
+        ips = ['192.168.42.105']
+        all_rrs = []
+        for ip in ips:
+            rr = dns.rrset.from_text('usa-failincomplete.example.org.', 0, dns.rdataclass.IN, 'A', ip)
+            all_rrs.append(rr)
+
+        query = dns.message.make_query('usa-failincomplete.example.org', 'A')
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.SERVFAIL)
+
+        # The above request being sent at time T, the following events occur:
+        # T+00: SERVFAIL returned as no data available yet
+        # T+00: checker thread starts
+        # T+02: 192.168.42.105 found down and marked as such
+
+        time.sleep(3)
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertAnyRRsetInAnswer(res, all_rrs)
+
+class TestLuaRecordsExecLimit(BaseLuaTest):
+     # This configuration is similar to BaseLuaTest, but the exec limit is
+     # set to a very low value.
+    _config_template = """
+geoip-database-files=../modules/geoipbackend/regression-tests/GeoLiteCity.mmdb
+edns-subnet-processing=yes
+launch=bind geoip
+any-to-tcp=no
+enable-lua-records
+lua-records-insert-whitespace=yes
+lua-records-exec-limit=1
+"""
+
+    def testA(self):
+        """
+        Test A query against `any`, failing due to exec-limit
+        """
+        name = 'any.example.org.'
+
+        query = dns.message.make_query(name, 'A')
+
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.SERVFAIL)
 
 if __name__ == '__main__':
     unittest.main()

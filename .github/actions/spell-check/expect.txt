@@ -284,6 +284,7 @@ defpol
 defttl
 Dehaine
 DENIC
+depfile
 descclassname
 descname
 Dessel
@@ -573,6 +574,7 @@ htbp
 htmlescape
 htmlhelp
 httpapi
+httpcode
 httpdomain
 hubert
 iana
