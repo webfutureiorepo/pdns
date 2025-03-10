@@ -411,14 +411,6 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
 {
   dnsdist::lua::setupConfigurationItems(luaCtx);
 
-  luaCtx.writeFunction("inClientStartup", [client]() {
-    return client && !dnsdist::configuration::isImmutableConfigurationDone();
-  });
-
-  luaCtx.writeFunction("inConfigCheck", [configCheck]() {
-    return configCheck;
-  });
-
   luaCtx.writeFunction("newServer",
                        [client, configCheck](boost::variant<string, newserver_t> pvars, boost::optional<int> qps) {
                          setLuaSideEffect();
@@ -1310,7 +1302,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
     dnsdist::console::clearHistory();
   });
 
-  luaCtx.writeFunction("testCrypto", [](boost::optional<string> optTestMsg) {
+  luaCtx.writeFunction("testCrypto", []([[maybe_unused]] boost::optional<string> optTestMsg) {
     setLuaNoSideEffect();
 #if defined(HAVE_LIBSODIUM) || defined(HAVE_LIBCRYPTO)
     try {
@@ -2226,7 +2218,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
       if (getOptionalValue<decltype(customResponseHeaders)>(vars, "customResponseHeaders", customResponseHeaders) > 0) {
         for (auto const& headerMap : customResponseHeaders) {
           auto headerResponse = std::pair(boost::to_lower_copy(headerMap.first), headerMap.second);
-          frontend->d_customResponseHeaders.insert(headerResponse);
+          frontend->d_customResponseHeaders.insert(std::move(headerResponse));
         }
       }
 
@@ -3082,7 +3074,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
         checkAllParametersConsumed("declareMetric", vars);
       }
     }
-    auto result = dnsdist::metrics::declareCustomMetric(name, type, description, customName, withLabels);
+    auto result = dnsdist::metrics::declareCustomMetric(name, type, description, std::move(customName), withLabels);
     if (result) {
       g_outputBuffer += *result + "\n";
       errlog("Error in declareMetric: %s", *result);
@@ -3166,10 +3158,20 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
 
 namespace dnsdist::lua
 {
-void setupLua(LuaContext& luaCtx, bool client, bool configCheck)
+void setupLuaBindingsOnly(LuaContext& luaCtx, bool client, bool configCheck)
 {
-  setupLuaActions(luaCtx);
-  setupLuaConfig(luaCtx, client, configCheck);
+  luaCtx.writeFunction("inClientStartup", [client]() {
+    return client && !dnsdist::configuration::isImmutableConfigurationDone();
+  });
+
+  luaCtx.writeFunction("inConfigCheck", [configCheck]() {
+    return configCheck;
+  });
+
+  luaCtx.writeFunction("enableLuaConfiguration", [&luaCtx, client, configCheck]() {
+    setupLuaConfigurationOptions(luaCtx, client, configCheck);
+  });
+
   setupLuaBindings(luaCtx, client, configCheck);
   setupLuaBindingsDNSCrypt(luaCtx, client);
   setupLuaBindingsDNSParser(luaCtx);
@@ -3180,15 +3182,32 @@ void setupLua(LuaContext& luaCtx, bool client, bool configCheck)
   setupLuaBindingsPacketCache(luaCtx, client);
   setupLuaBindingsProtoBuf(luaCtx, client, configCheck);
   setupLuaBindingsRings(luaCtx, client);
-  dnsdist::lua::hooks::setupLuaHooks(luaCtx);
   setupLuaInspection(luaCtx);
-  setupLuaRules(luaCtx);
   setupLuaVars(luaCtx);
   setupLuaWeb(luaCtx);
 
 #ifdef LUAJIT_VERSION
   luaCtx.executeCode(getLuaFFIWrappers());
 #endif
+}
+
+void setupLuaConfigurationOptions(LuaContext& luaCtx, bool client, bool configCheck)
+{
+  static std::atomic<bool> s_initialized{false};
+  if (s_initialized.exchange(true)) {
+    return;
+  }
+
+  setupLuaConfig(luaCtx, client, configCheck);
+  setupLuaActions(luaCtx);
+  setupLuaRules(luaCtx);
+  dnsdist::lua::hooks::setupLuaHooks(luaCtx);
+}
+
+void setupLua(LuaContext& luaCtx, bool client, bool configCheck)
+{
+  setupLuaBindingsOnly(luaCtx, client, configCheck);
+  setupLuaConfigurationOptions(luaCtx, client, configCheck);
 }
 }
 

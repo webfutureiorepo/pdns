@@ -224,12 +224,12 @@ extern thread_local std::shared_ptr<NetmaskGroup> t_allowFrom;
 extern thread_local std::shared_ptr<NetmaskGroup> t_allowNotifyFrom;
 extern thread_local std::shared_ptr<notifyset_t> t_allowNotifyFor;
 extern thread_local std::unique_ptr<UDPClientSocks> t_udpclientsocks;
+extern thread_local std::shared_ptr<NetmaskGroup> t_proxyProtocolACL;
+extern thread_local std::shared_ptr<std::set<ComboAddress>> t_proxyProtocolExceptions;
 extern bool g_useIncomingECS;
 extern boost::optional<ComboAddress> g_dns64Prefix;
 extern DNSName g_dns64PrefixReverse;
 extern uint64_t g_latencyStatSize;
-extern NetmaskGroup g_proxyProtocolACL;
-extern std::set<ComboAddress> g_proxyProtocolExceptions;
 extern std::atomic<bool> g_statsWanted;
 extern uint32_t g_disthashseed;
 extern int g_argc;
@@ -288,9 +288,6 @@ extern boost::container::flat_set<uint16_t> g_avoidUdpSourcePorts;
 /* without reuseport, all listeners share the same sockets */
 typedef vector<pair<int, std::function<void(int, boost::any&)>>> deferredAdd_t;
 
-typedef map<ComboAddress, uint32_t, ComboAddress::addressOnlyLessThan> tcpClientCounts_t;
-extern thread_local std::unique_ptr<tcpClientCounts_t> t_tcpClientCounts;
-
 inline MT_t* getMT()
 {
   return g_multiTasker ? g_multiTasker.get() : nullptr;
@@ -332,8 +329,7 @@ static bool sendResponseOverTCP(const std::unique_ptr<DNSComboWriter>& dc, const
 
 // For communicating with our threads effectively readonly after
 // startup.
-// First we have the handler thread, t_id == 0 (some other helper
-// threads like SNMP might have t_id == 0 as well) then the
+// First we have the handler thread, t_id == 0  then the
 // distributor threads if any and finally the workers
 struct RecThreadInfo
 {
@@ -350,12 +346,16 @@ struct RecThreadInfo
 public:
   static RecThreadInfo& self()
   {
-    return s_threadInfos.at(t_id);
+    auto& info = s_threadInfos.at(t_id);
+    assert(info.d_myid == t_id); // internal consistency check
+    return info;
   }
 
   static RecThreadInfo& info(unsigned int index)
   {
-    return s_threadInfos.at(index);
+    auto& info = s_threadInfos.at(index);
+    assert(info.d_myid == index);
+    return info;
   }
 
   static vector<RecThreadInfo>& infos()
@@ -365,17 +365,11 @@ public:
 
   [[nodiscard]] bool isDistributor() const
   {
-    if (t_id == 0) {
-      return false;
-    }
     return s_weDistributeQueries && listener;
   }
 
   [[nodiscard]] bool isHandler() const
   {
-    if (t_id == 0) {
-      return true;
-    }
     return handler;
   }
 
@@ -427,9 +421,22 @@ public:
     taskThread = true;
   }
 
-  static unsigned int id()
+  static unsigned int thread_local_id()
   {
+    if (t_id == TID_NOT_INITED) {
+      return 0; // backward compatibility
+    }
     return t_id;
+  }
+
+  static bool is_thread_inited()
+  {
+    return t_id != TID_NOT_INITED;
+  }
+
+  [[nodiscard]] unsigned int id() const
+  {
+    return d_myid;
   }
 
   static void setThreadId(unsigned int arg)
@@ -550,6 +557,15 @@ public:
     info(0).thread.join();
   }
 
+  static void resize(size_t size)
+  {
+    s_threadInfos.resize(size);
+    for (unsigned int i = 0; i < size; i++) {
+      s_threadInfos.at(i).d_myid = i;
+    }
+  }
+  static constexpr unsigned int TID_NOT_INITED = std::numeric_limits<unsigned int>::max();
+
 private:
   // FD corresponding to TCP sockets this thread is listening on.
   // These FDs are also in deferredAdds when we have one socket per
@@ -569,6 +585,7 @@ private:
   std::string name;
   std::thread thread;
   int exitCode{0};
+  unsigned int d_myid{TID_NOT_INITED}; // should always be equal to the thread_local tid;
 
   // handle the web server, carbon, statistics and the control channel
   bool handler{false};

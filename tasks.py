@@ -1,10 +1,7 @@
+import os
+import time
 from invoke import task
 from invoke.exceptions import Failure, UnexpectedExit
-
-import json
-import os
-import sys
-import time
 
 auth_backend_ip_addr = os.getenv('AUTH_BACKEND_IP_ADDR', '127.0.0.1')
 
@@ -1172,7 +1169,7 @@ def test_regression_recursor(c):
 @task
 def test_bulk_recursor(c, size, threads, mthreads, shards, ipv6):
     with c.cd('regression-tests'):
-        c.run('curl --no-progress-meter -LO http://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip')
+        c.run('curl --no-progress-meter -LO https://umbrella-static.s3.dualstack.us-west-1.amazonaws.com/top-1m.csv.zip')
         c.run('unzip top-1m.csv.zip -d .')
         c.run('chmod +x /opt/pdns-recursor/bin/* /opt/pdns-recursor/sbin/*')
         c.run(f'DNSBULKTEST=/usr/bin/dnsbulktest RECURSOR=/opt/pdns-recursor/sbin/pdns_recursor RECCONTROL=/opt/pdns-recursor/bin/rec_control IPv6={ipv6} THRESHOLD=95 TRACE=no ./recursor-test 5300 {size} {threads} {mthreads} {shards}')
@@ -1221,10 +1218,16 @@ def ci_build_and_install_quiche(c, repo):
         c.run(f'sudo {repo}/builder-support/helpers/install_quiche.sh')
 
     # cannot use c.sudo() inside a cd() context, see https://github.com/pyinvoke/invoke/issues/687
-    c.run('sudo mv /usr/lib/libdnsdist-quiche.so /usr/lib/libquiche.so')
-    c.run("sudo sed -i 's,^Libs:.*,Libs: -lquiche,g' /usr/lib/pkgconfig/quiche.pc")
-    c.run('mkdir -p /opt/dnsdist/lib')
-    c.run('cp /usr/lib/libquiche.so /opt/dnsdist/lib/libquiche.so')
+    for tentative in ['lib/x86_64-linux-gnu', 'lib/aarch64-linux-gnu', 'lib64', 'lib']:
+        tentative_libdir = f'/usr/{tentative}'
+        quiche_lib = f'{tentative_libdir}/libdnsdist-quiche.so'
+        if not os.path.isfile(quiche_lib):
+            continue
+        c.run(f'sudo mv {quiche_lib} /usr/lib/libquiche.so')
+        c.run(f"sudo sed -i 's,^Libs:.*,Libs: -lquiche,g' {tentative_libdir}/pkgconfig/quiche.pc")
+        c.run('mkdir -p /opt/dnsdist/lib')
+        c.run('cp /usr/lib/libquiche.so /opt/dnsdist/lib/libquiche.so')
+        break
 
 # this is run always
 def setup():

@@ -38,8 +38,6 @@ subdir('meson' / 'compiler-setup')          # Common compiler setup
 subdir('meson' / 'summary')                 # Print a system/project summary
 subdir('meson' / 'sysconfdir')              # Sysconfdir
 subdir('meson' / 'platform')                # Platform detection
-subdir('meson' / 'timet-size')              # Check the size of time_t
-subdir('meson' / 'timet-sign')              # Check the sign of time_t
 subdir('meson' / 'atomics')                 # Check atomics support
 subdir('meson' / 'pthread-headers')         # Check pthread headers
 subdir('meson' / 'pthread-setname')         # Pthread setname madness
@@ -102,7 +100,7 @@ subdir('ext' / 'luawrapper')
 subdir('ext' / 'protozero')
 subdir('ext' / 'yahttp')
 
-if get_option('lmdb').allowed()
+if dep_lmdb.found()
   subdir('ext' / 'lmdb-safe')
 else
   dep_lmdb_safe = declare_dependency()
@@ -200,7 +198,6 @@ common_sources += files(
   src_dir / 'ednsoptions.cc',
   src_dir / 'ednssubnet.cc',
   src_dir / 'gettime.cc',
-  src_dir / 'ipcipher.cc',
   src_dir / 'iputils.cc',
   src_dir / 'libssl.cc',
   src_dir / 'misc.cc',
@@ -576,6 +573,11 @@ if get_option('man-pages') and python.found()
       foreach man_page: info['manpages']
         if not fs.is_file(man_page)
           generated_man_pages += man_page
+        else
+          install_man(
+            man_page,
+            install_dir: join_paths(get_option('mandir'), 'man1'),
+          )
         endif
       endforeach
     endif
@@ -702,3 +704,52 @@ install_data(
   install_dir : get_option('sysconfdir'),
   follow_symlinks: true
 )
+
+if python.found()
+
+  html_docs = custom_target(
+    'html-docs',
+    command: [
+        python,
+        product_source_dir / docs_dir / 'generate-docs.py',
+        '--build-root', '@BUILD_ROOT@',
+        '--source-root', '@SOURCE_ROOT@',
+        '--venv-name', 'venv-docs',
+        '--requirements-file', docs_dir / 'requirements.txt',
+        '--source-directory', docs_dir,
+        '--target-directory', '@BUILD_ROOT@' / 'html-docs',
+    ],
+    output: 'sphinx.stamp',
+    console: true,
+    depfile: 'sphinx.d',
+  )
+
+  docs_tarball = custom_target(
+    'html-docs.tar.bz2',
+    command: ['tar', 'cjf', 'html-docs.tar.bz2', html_docs],
+    output: 'html-docs.tar.bz2',
+  )
+
+  pdf_docs = custom_target(
+    command: [
+        python,
+        product_source_dir / docs_dir / 'generate-docs.py',
+        '--build-root', '@BUILD_ROOT@',
+        '--source-root', '@SOURCE_ROOT@',
+        '--venv-name', 'venv-docs',
+        '--requirements-file', docs_dir / 'requirements.txt',
+        '--source-directory', docs_dir,
+        '--target-directory', '@BUILD_ROOT@',
+        '--pdf-name', 'dnsdist.pdf',
+    ],
+    output: 'dnsdist.pdf',
+    console: true,
+    depfile: 'sphinx.d',
+  )
+
+  run_target(
+    'all-docs',
+    # args mentioned in command line become auto-dependency
+    command: ['echo', 'Generated', html_docs, docs_tarball, pdf_docs],
+  )
+endif
