@@ -17,7 +17,7 @@ FSTRM_CONTROL_READY = 0x04
 FSTRM_CONTROL_FINISH = 0x05
 
 
-def checkDnstapBase(testinstance, dnstap, protocol, initiator):
+def checkDnstapBase(testinstance, dnstap, protocol, initiator, response_port):
     testinstance.assertTrue(dnstap)
     testinstance.assertTrue(dnstap.HasField('identity'))
     testinstance.assertEqual(dnstap.identity, b'a.server')
@@ -35,15 +35,23 @@ def checkDnstapBase(testinstance, dnstap, protocol, initiator):
     testinstance.assertTrue(dnstap.message.HasField('response_address'))
     testinstance.assertEqual(socket.inet_ntop(socket.AF_INET, dnstap.message.response_address), initiator)
     testinstance.assertTrue(dnstap.message.HasField('response_port'))
-    testinstance.assertEqual(dnstap.message.response_port, testinstance._dnsDistPort)
+    testinstance.assertEqual(dnstap.message.response_port, response_port)
 
 
-def checkDnstapQuery(testinstance, dnstap, protocol, query, initiator='127.0.0.1'):
+def checkDnstapQuery(testinstance, dnstap, protocol, query, initiator='127.0.0.1', response_port=0, http_protocol=0):
+
     testinstance.assertEqual(dnstap.message.type, dnstap_pb2.Message.CLIENT_QUERY)
-    checkDnstapBase(testinstance, dnstap, protocol, initiator)
+    if response_port == 0 :
+        response_port = testinstance._dnsDistPort
+
+    checkDnstapBase(testinstance, dnstap, protocol, initiator, response_port)
 
     testinstance.assertTrue(dnstap.message.HasField('query_time_sec'))
     testinstance.assertTrue(dnstap.message.HasField('query_time_nsec'))
+
+    if http_protocol != 0 :
+        testinstance.assertTrue(dnstap.message.HasField('http_protocol'))
+        testinstance.assertEqual(dnstap.message.http_protocol, http_protocol)
 
     testinstance.assertTrue(dnstap.message.HasField('query_message'))
     wire_message = dns.message.from_wire(dnstap.message.query_message)
@@ -54,14 +62,15 @@ def checkDnstapExtra(testinstance, dnstap, expected):
     testinstance.assertTrue(dnstap.HasField('extra'))
     testinstance.assertEqual(dnstap.extra, expected)
 
-
 def checkDnstapNoExtra(testinstance, dnstap):
     testinstance.assertFalse(dnstap.HasField('extra'))
 
 
-def checkDnstapResponse(testinstance, dnstap, protocol, response, initiator='127.0.0.1'):
+def checkDnstapResponse(testinstance, dnstap, protocol, response, initiator='127.0.0.1', response_port=0):
     testinstance.assertEqual(dnstap.message.type, dnstap_pb2.Message.CLIENT_RESPONSE)
-    checkDnstapBase(testinstance, dnstap, protocol, initiator)
+    if response_port == 0 :
+        response_port = testinstance._dnsDistPort
+    checkDnstapBase(testinstance, dnstap, protocol, initiator, response_port)
 
     testinstance.assertTrue(dnstap.message.HasField('query_time_sec'))
     testinstance.assertTrue(dnstap.message.HasField('query_time_nsec'))
@@ -76,6 +85,29 @@ def checkDnstapResponse(testinstance, dnstap, protocol, response, initiator='127
     wire_message = dns.message.from_wire(dnstap.message.response_message)
     testinstance.assertEqual(wire_message, response)
 
+
+def getFirstMatchingMessageFromQueue(queue, messageType=None):
+    unused_messages = []
+    selected = None
+    while True:
+        data = queue.get(True, timeout=2.0)
+        if not data:
+            break
+        decoded_message = dnstap_pb2.Dnstap()
+        decoded_message.ParseFromString(data)
+        if not selected and (not messageType or decoded_message.message.type == messageType):
+            selected = decoded_message
+        else:
+            unused_messages.append(data)
+
+        if queue.empty():
+            break
+
+    # put back non-matching messages for later
+    for msg in reversed(unused_messages):
+        queue.put(msg)
+
+    return selected
 
 class TestDnstapOverRemoteLogger(DNSDistTest):
     _remoteLoggerServerPort = pickAvailablePort()
@@ -155,12 +187,7 @@ class TestDnstapOverRemoteLogger(DNSDistTest):
         cls._remoteLoggerListener.start()
 
     def getFirstDnstap(self):
-        self.assertFalse(self._remoteLoggerQueue.empty())
-        data = self._remoteLoggerQueue.get(False)
-        self.assertTrue(data)
-        dnstap = dnstap_pb2.Dnstap()
-        dnstap.ParseFromString(data)
-        return dnstap
+        return getFirstMatchingMessageFromQueue(self._remoteLoggerQueue)
 
     def testDnstap(self):
         """
@@ -380,13 +407,8 @@ class TestDnstapOverRemoteLoggerPool(DNSDistTest):
         cls._remoteLoggerListener.daemon = True
         cls._remoteLoggerListener.start()
 
-    def getFirstDnstap(self):
-        self.assertFalse(self._remoteLoggerQueue.empty())
-        data = self._remoteLoggerQueue.get(False)
-        self.assertTrue(data)
-        dnstap = dnstap_pb2.Dnstap()
-        dnstap.ParseFromString(data)
-        return dnstap
+    def getFirstDnstap(self, messageType=None):
+        return getFirstMatchingMessageFromQueue(self._remoteLoggerQueue, messageType=messageType)
 
     def testDnstap(self):
         """
@@ -423,13 +445,13 @@ class TestDnstapOverRemoteLoggerPool(DNSDistTest):
         time.sleep(1)
 
         # check the dnstap message corresponding to the UDP query
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_QUERY)
 
         checkDnstapQuery(self, dnstap, dnstap_pb2.UDP, query)
         checkDnstapNoExtra(self, dnstap)
 
         # check the dnstap message corresponding to the UDP response
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_RESPONSE)
         checkDnstapResponse(self, dnstap, dnstap_pb2.UDP, response)
         checkDnstapNoExtra(self, dnstap)
 
@@ -444,13 +466,13 @@ class TestDnstapOverRemoteLoggerPool(DNSDistTest):
         time.sleep(1)
 
         # check the dnstap message corresponding to the TCP query
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_QUERY)
 
         checkDnstapQuery(self, dnstap, dnstap_pb2.TCP, query)
         checkDnstapNoExtra(self, dnstap)
 
         # check the dnstap message corresponding to the TCP response
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_RESPONSE)
         checkDnstapResponse(self, dnstap, dnstap_pb2.TCP, response)
         checkDnstapNoExtra(self, dnstap)
 
@@ -489,12 +511,12 @@ class TestDnstapOverRemoteLoggerPool(DNSDistTest):
         time.sleep(1)
 
         # check the dnstap message corresponding to the UDP query
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_QUERY)
         checkDnstapQuery(self, dnstap, dnstap_pb2.UDP, query)
         checkDnstapExtra(self, dnstap, b"Type,Query")
 
         # check the dnstap message corresponding to the UDP response
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_RESPONSE)
         checkDnstapResponse(self, dnstap, dnstap_pb2.UDP, response)
         checkDnstapExtra(self, dnstap, b"Type,Response")
 
@@ -509,12 +531,12 @@ class TestDnstapOverRemoteLoggerPool(DNSDistTest):
         time.sleep(1)
 
         # check the dnstap message corresponding to the TCP query
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_QUERY)
         checkDnstapQuery(self, dnstap, dnstap_pb2.TCP, query)
         checkDnstapExtra(self, dnstap, b"Type,Query")
 
         # check the dnstap message corresponding to the TCP response
-        dnstap = self.getFirstDnstap()
+        dnstap = self.getFirstDnstap(dnstap_pb2.Message.CLIENT_RESPONSE)
         checkDnstapResponse(self, dnstap, dnstap_pb2.TCP, response)
         checkDnstapExtra(self, dnstap, b"Type,Response")
 
@@ -574,16 +596,25 @@ def fstrm_handle_bidir_connection(conn, on_data, exit_early=False):
             if exit_early:
                 break
 
-
 class TestDnstapOverFrameStreamUnixLogger(DNSDistTest):
+    _serverKey = 'server.key'
+    _serverCert = 'server.chain'
+    _serverName = 'tls.tests.dnsdist.org'
+    _caCert = 'ca.pem'
+    _dohServerPort = pickAvailablePort()
+    _doh3ServerPort = pickAvailablePort()
+    _dohBaseURL = ("https://%s:%d/" % (_serverName, _dohServerPort))
+
     _fstrmLoggerAddress = '/tmp/fslutest.sock'
     _fstrmLoggerQueue = Queue()
     _fstrmLoggerCounter = 0
-    _config_params = ['_testServerPort', '_fstrmLoggerAddress']
+    _config_params = ['_testServerPort', '_fstrmLoggerAddress', '_dohServerPort', '_serverCert', '_serverKey', '_doh3ServerPort', '_serverCert', '_serverKey']
     _config_template = """
     newServer{address="127.0.0.1:%s", useClientSubnet=true}
     fslu = newFrameStreamUnixLogger('%s')
 
+    addDOHLocal("127.0.0.1:%d", "%s", "%s", { "/" }, {})
+    addDOH3Local("127.0.0.1:%d", "%s", "%s")
     addAction(AllRule(), DnstapLogAction("a.server", fslu))
     """
 
@@ -617,11 +648,7 @@ class TestDnstapOverFrameStreamUnixLogger(DNSDistTest):
         cls._fstrmLoggerListener.start()
 
     def getFirstDnstap(self):
-        data = self._fstrmLoggerQueue.get(True, timeout=2.0)
-        self.assertTrue(data)
-        dnstap = dnstap_pb2.Dnstap()
-        dnstap.ParseFromString(data)
-        return dnstap
+        return getFirstMatchingMessageFromQueue(self._fstrmLoggerQueue)
 
     def testDnstapOverFrameStreamUnix(self):
         """
@@ -659,6 +686,40 @@ class TestDnstapOverFrameStreamUnixLogger(DNSDistTest):
 
         checkDnstapQuery(self, dnstap, dnstap_pb2.UDP, query)
         checkDnstapNoExtra(self, dnstap)
+
+    def testDnstapHttpProtocol(self):
+        """
+        DOH and DOH3: Make sure http protocol field is correctly set
+        """
+        name = 'simple.doh.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'A', 'IN', use_edns=False)
+        query.id = 0
+        expectedQuery = dns.message.make_query(name, 'A', 'IN', use_edns=True, payload=4096)
+        expectedQuery.id = 0
+        response = dns.message.make_response(query)
+        rrset = dns.rrset.from_text(name,
+                                    3600,
+                                    dns.rdataclass.IN,
+                                    dns.rdatatype.A,
+                                    '127.0.0.1')
+        response.answer.append(rrset)
+
+        protocols = [
+            {"method": "sendDOH3QueryWrapper", "port": self._doh3ServerPort, "expected_protocol": dnstap_pb2.HttpProtocol.HTTP3},
+            {"method": "sendDOHQueryWrapper",  "port": self._dohServerPort,  "expected_protocol": dnstap_pb2.HttpProtocol.HTTP2},
+        ]
+        for protocol in protocols :
+            sender = getattr(self, protocol["method"])
+            (receivedQuery, receivedResponse) = sender(query, response)
+            receivedQuery.id = query.id
+            self.assertEqual(query, receivedQuery)
+            self.assertEqual(response, receivedResponse)
+
+            # check the dnstap message corresponding to the UDP query
+            dnstap = self.getFirstDnstap()
+
+            checkDnstapQuery(self, dnstap, dnstap_pb2.DOH, query, '127.0.0.1', protocol["port"], protocol["expected_protocol"])
+            checkDnstapNoExtra(self, dnstap)
 
 class TestDnstapOverRemotePoolUnixLogger(DNSDistTest):
     _fstrmLoggerAddress = '/tmp/fslutest.sock'
@@ -713,11 +774,7 @@ class TestDnstapOverRemotePoolUnixLogger(DNSDistTest):
         cls._fstrmLoggerListener.start()
 
     def getFirstDnstap(self):
-        data = self._fstrmLoggerQueue.get(True, timeout=2.0)
-        self.assertTrue(data)
-        dnstap = dnstap_pb2.Dnstap()
-        dnstap.ParseFromString(data)
-        return dnstap
+        return getFirstMatchingMessageFromQueue(self._fstrmLoggerQueue)
 
     def testDnstapOverFrameStreamUnix(self):
         """
@@ -796,11 +853,7 @@ class TestDnstapOverFrameStreamTcpLogger(DNSDistTest):
         cls._fstrmLoggerListener.start()
 
     def getFirstDnstap(self):
-        data = self._fstrmLoggerQueue.get(True, timeout=2.0)
-        self.assertTrue(data)
-        dnstap = dnstap_pb2.Dnstap()
-        dnstap.ParseFromString(data)
-        return dnstap
+        return getFirstMatchingMessageFromQueue(self._fstrmLoggerQueue)
 
     def testDnstapOverFrameStreamTcp(self):
         """
@@ -888,11 +941,7 @@ class TestDnstapOverRemotePoolTcpLogger(DNSDistTest):
         cls._fstrmLoggerListener.start()
 
     def getFirstDnstap(self):
-        data = self._fstrmLoggerQueue.get(True, timeout=2.0)
-        self.assertTrue(data)
-        dnstap = dnstap_pb2.Dnstap()
-        dnstap.ParseFromString(data)
-        return dnstap
+        return getFirstMatchingMessageFromQueue(self._fstrmLoggerQueue)
 
     def testDnstapOverFrameStreamTcp(self):
         """

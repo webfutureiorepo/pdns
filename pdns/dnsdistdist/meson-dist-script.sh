@@ -18,6 +18,8 @@ cmp "$MESON_SOURCE_ROOT"/../../builder-support/gen-version "$MESON_PROJECT_DIST_
 # Extract them over the existing symbolic links
 tar -C "$MESON_SOURCE_ROOT" -hcf - $symlinks | tar -xf - -C "$MESON_PROJECT_DIST_ROOT"
 
+# set the proper version in configure.ac
+"$MESON_SOURCE_ROOT"/../../builder/helpers/set-configure-ac-version.sh
 # Run autoconf for people using autotools to build, this creates a configure script with VERSION set
 echo Running autoreconf -vi so distfile is still usable for autotools building
 # Run autoconf for people using autotools to build, this creates a configure sc
@@ -32,5 +34,5 @@ rm -rf "$MESON_PROJECT_DIST_ROOT"/autom4te.cache
 
 # Generate a few files to reduce build dependencies
 echo 'If the below command generates an error, remove dnslabeltext.cc from source dir (remains of an autotools build?) and start again with a clean meson setup'
-ninja libdnsdist-dnslabeltext.a.p/dnslabeltext.cc
-cp -vp libdnsdist-dnslabeltext.a.p/dnslabeltext.cc "$MESON_PROJECT_DIST_ROOT"
+ninja libdnsdist-common.a.p/dnslabeltext.cc
+cp -vp libdnsdist-common.a.p/dnslabeltext.cc "$MESON_PROJECT_DIST_ROOT"

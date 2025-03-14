@@ -38,8 +38,6 @@ subdir('meson' / 'compiler-setup')          # Common compiler setup
 subdir('meson' / 'summary')                 # Print a system/project summary
 subdir('meson' / 'sysconfdir')              # Sysconfdir
 subdir('meson' / 'platform')                # Platform detection
-subdir('meson' / 'timet-size')              # Check the size of time_t
-subdir('meson' / 'timet-sign')              # Check the sign of time_t
 subdir('meson' / 'atomics')                 # Check atomics support
 subdir('meson' / 'pthread-headers')         # Check pthread headers
 subdir('meson' / 'pthread-setname')         # Pthread setname madness
@@ -102,7 +100,7 @@ subdir('ext' / 'luawrapper')
 subdir('ext' / 'protozero')
 subdir('ext' / 'yahttp')
 
-if get_option('lmdb').allowed()
+if dep_lmdb.found()
   subdir('ext' / 'lmdb-safe')
 else
   dep_lmdb_safe = declare_dependency()
@@ -159,10 +157,8 @@ common_sources += files(
   src_dir / 'dnsdist-lua-bindings-rings.cc',
   src_dir / 'dnsdist-lua-configuration-items.cc',
   src_dir / 'dnsdist-lua.cc',
-  src_dir / 'dnsdist-lua-ffi.cc',
   src_dir / 'dnsdist-lua-hooks.cc',
   src_dir / 'dnsdist-lua-inspection.cc',
-  src_dir / 'dnsdist-lua-inspection-ffi.cc',
   src_dir / 'dnsdist-lua-network.cc',
   src_dir / 'dnsdist-lua-rules.cc',
   src_dir / 'dnsdist-lua-vars.cc',
@@ -200,7 +196,6 @@ common_sources += files(
   src_dir / 'ednsoptions.cc',
   src_dir / 'ednssubnet.cc',
   src_dir / 'gettime.cc',
-  src_dir / 'ipcipher.cc',
   src_dir / 'iputils.cc',
   src_dir / 'libssl.cc',
   src_dir / 'misc.cc',
@@ -341,7 +336,6 @@ deps = [
   dep_boost,
   dep_cdb,
   dep_dnstap,
-  dep_ffi_interface,
   dep_htmlfiles,
   dep_ipcrypt,
   dep_libcap,
@@ -385,22 +379,14 @@ if not fs.is_file(libdnsdist_dnslabeltext_gen)
   libdnsdist_dnslabeltext_gen = ragel_generator.process(libdnsdist_dnslabeltext_source)
 endif
 
-libdnsdist_dnslabeltext = declare_dependency(
-  link_with: static_library(
-    'dnsdist-dnslabeltext',
-    libdnsdist_dnslabeltext_gen,
-    dependencies: deps,
-  )
-)
-
 libdnsdist_common = declare_dependency(
   link_with: static_library(
     'dnsdist-common',
     common_sources,
     config_h,
+    libdnsdist_dnslabeltext_gen,
     dependencies: [
       deps,
-      libdnsdist_dnslabeltext,
     ],
   )
 )
@@ -411,17 +397,22 @@ tools = {
     'files-extra': [
       src_dir / 'dnstap.cc',
       src_dir / 'fstrm_logger.cc',
+      # FFI files are directly added to the binary, because otherwise the visibility
+      # is ignored and the functions that are not used in the binary are not exported
+      src_dir / 'dnsdist-lua-ffi.cc',
+      src_dir / 'dnsdist-lua-inspection-ffi.cc',
       mplexer_sources,
     ],
     'manpages': ['dnsdist.1'],
     'deps-extra': [
-      dep_pdns,
       dep_boost,
+      dep_pdns,
+      dep_ffi_interface,
       dep_lua,
       dep_protozero,
-      dep_yahttp,
       dep_json11,
-      dep_systemd,
+      dep_libsystemd,
+      dep_yahttp,
     ],
     'install': true,
   },
@@ -514,9 +505,16 @@ if get_option('unit-tests')
           src_dir / 'testrunner.cc',
           mplexer_sources,
         ],
+        'files-extra': [
+          # FFI files are directly added to the binary, because otherwise the visibility
+          # is ignored and the functions that are not used in the binary are not exported
+          src_dir / 'dnsdist-lua-ffi.cc',
+        ],
         'deps-extra': [
           libdnsdist_test,
           dep_boost_test,
+          dep_ffi_interface,
+          dep_lua,
         ],
     }
   }
@@ -576,6 +574,11 @@ if get_option('man-pages') and python.found()
       foreach man_page: info['manpages']
         if not fs.is_file(man_page)
           generated_man_pages += man_page
+        else
+          install_man(
+            man_page,
+            install_dir: join_paths(get_option('mandir'), 'man1'),
+          )
         endif
       endforeach
     endif
@@ -702,3 +705,52 @@ install_data(
   install_dir : get_option('sysconfdir'),
   follow_symlinks: true
 )
+
+if python.found()
+
+  html_docs = custom_target(
+    'html-docs',
+    command: [
+        python,
+        product_source_dir / docs_dir / 'generate-docs.py',
+        '--build-root', '@BUILD_ROOT@',
+        '--source-root', '@SOURCE_ROOT@',
+        '--venv-name', 'venv-docs',
+        '--requirements-file', docs_dir / 'requirements.txt',
+        '--source-directory', docs_dir,
+        '--target-directory', '@BUILD_ROOT@' / 'html-docs',
+    ],
+    output: 'sphinx.stamp',
+    console: true,
+    depfile: 'sphinx.d',
+  )
+
+  docs_tarball = custom_target(
+    'html-docs.tar.bz2',
+    command: ['tar', 'cjf', 'html-docs.tar.bz2', html_docs],
+    output: 'html-docs.tar.bz2',
+  )
+
+  pdf_docs = custom_target(
+    command: [
+        python,
+        product_source_dir / docs_dir / 'generate-docs.py',
+        '--build-root', '@BUILD_ROOT@',
+        '--source-root', '@SOURCE_ROOT@',
+        '--venv-name', 'venv-docs',
+        '--requirements-file', docs_dir / 'requirements.txt',
+        '--source-directory', docs_dir,
+        '--target-directory', '@BUILD_ROOT@',
+        '--pdf-name', 'dnsdist.pdf',
+    ],
+    output: 'dnsdist.pdf',
+    console: true,
+    depfile: 'sphinx.d',
+  )
+
+  run_target(
+    'all-docs',
+    # args mentioned in command line become auto-dependency
+    command: ['echo', 'Generated', html_docs, docs_tarball, pdf_docs],
+  )
+endif

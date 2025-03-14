@@ -18,7 +18,10 @@ meson.add_dist_script('meson-dist-script.sh')
 meson.add_dist_script('version.sh', 'set-dist', meson.project_version())
 
 add_project_arguments('-DRECURSOR', language: 'cpp')
-
+add_project_arguments(
+  '-fvisibility=hidden',
+  language: ['c', 'cpp'],
+)
 
 product_source_dir = meson.current_source_dir()
 product_build_dir = meson.current_build_dir()
@@ -73,6 +76,7 @@ subdir('meson' / 'various-headers')         # Various Headers
 subdir('meson' / 'libresolv')               # res_query
 subdir('meson' / 'dnstap')                  # DNSTAP through libfstream
 subdir('meson' / 'libcurl')                 # Curl
+subdir('meson' / 'libcap')                  # Capabilities
 
 subdir('rec-rust-lib')
 
@@ -318,6 +322,7 @@ deps = [
   dep_dnstap,
   dep_libcurl,
   dep_metrics,
+  dep_libcap,
 ]
 
 # Conditional sources that need to be separated into standalone libraries for special
@@ -404,9 +409,20 @@ librec_common = declare_dependency(
   )
 )
 
+
+if target_machine.system() != 'darwin'
+    rec_link_args = [
+	'-Wl,--export-dynamic-symbol=pdns_ffi_*',
+	'-Wl,--export-dynamic-symbol=pdns_postresolve_ffi_*',
+    ]
+else
+    rec_link_args = ['-rdynamic']
+endif
+
 tools = {
   'pdns_recursor': {
     'main': src_dir / 'rec-main.cc',
+    'link-args': rec_link_args,
     'files-extra': [
       src_dir / 'capabilities.cc',
       src_dir / 'channel.cc',
@@ -427,7 +443,7 @@ tools = {
       dep_json11,
       dep_recrust,
       dep_rust_recrust,
-      dep_systemd,
+      dep_libsystemd,
       librec_signers_openssl,
       librec_signers_sodium,
       dep_pubsuffix,
@@ -542,6 +558,7 @@ foreach tool, info: tools
   main = files(info['main'])
 
   export_dynamic = 'export-dynamic' in info ? info['export-dynamic'] : false
+  link_args = 'link-args' in info ? info['link-args'] : []
   files_extra = 'files-extra' in info ? info['files-extra'] : []
   deps_extra = 'deps-extra' in info ? info['deps-extra'] : []
   install = 'install' in info ? info['install'] : false
@@ -555,6 +572,7 @@ foreach tool, info: tools
       config_h,
       files_extra,
       export_dynamic: export_dynamic,
+      link_args: link_args,
       dependencies: [
         librec_common,
         deps_extra,
@@ -618,7 +636,7 @@ if python.found()
   endif
 endif
 
-if dep_systemd.found()
+if dep_systemd_prog.found()
   systemd_system_unit_dir = dep_systemd_prog.get_variable(
     'systemdsystemunitdir',
   )
@@ -734,3 +752,53 @@ dep_conf_distfile = custom_target(
   install_dir:  get_option('sysconfdir'),
 )
 
+if python.found()
+
+  html_docs = custom_target(
+    'html-docs',
+    command: [
+        python,
+        product_source_dir / docs_dir / 'generate-docs.py',
+        '--build-root', '@BUILD_ROOT@',
+        '--source-root', '@SOURCE_ROOT@',
+        '--venv-name', 'venv-docs',
+        '--requirements-file', docs_dir / 'requirements.txt',
+        '--source-directory', docs_dir,
+        '--target-directory', '@BUILD_ROOT@' / 'html-docs',
+    ],
+    output: 'sphinx.stamp',
+    console: true,
+    depfile: 'sphinx.d',
+    depends: [ metricfiles, recrust ], # for generated .rst files
+  )
+
+  docs_tarball = custom_target(
+    'html-docs.tar.bz2',
+    command: ['tar', 'cjf', 'html-docs.tar.bz2', html_docs],
+    output: 'html-docs.tar.bz2',
+  )
+
+  pdf_docs = custom_target(
+    command: [
+        python,
+        product_source_dir / docs_dir / 'generate-docs.py',
+        '--build-root', '@BUILD_ROOT@',
+        '--source-root', '@SOURCE_ROOT@',
+        '--venv-name', 'venv-docs',
+        '--requirements-file', docs_dir / 'requirements.txt',
+        '--source-directory', docs_dir,
+        '--target-directory', '@BUILD_ROOT@',
+        '--pdf-name', 'PowerDNS-Recursor.pdf',
+    ],
+    output: 'PowerDNS-Recursor.pdf',
+    console: true,
+    depfile: 'sphinx.d',
+    depends: [ metricfiles, recrust ], # for generated .rst files
+  )
+
+  run_target(
+    'all-docs',
+    # args mentioned in command line become auto-dependency
+    command: ['echo', 'Generated', html_docs, docs_tarball, pdf_docs],
+  )
+endif
