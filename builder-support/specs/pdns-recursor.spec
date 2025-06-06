@@ -30,8 +30,13 @@ BuildRequires: systemd
 BuildRequires: systemd-devel
 
 %ifarch aarch64
+%if 0%{?rhel} < 9
 BuildRequires: lua-devel
 %define lua_implementation lua
+%else
+BuildRequires: luajit-devel
+%define lua_implementation luajit
+%endif
 %else
 BuildRequires: luajit-devel
 %define lua_implementation luajit
@@ -82,17 +87,20 @@ export LDFLAGS="-fuse-ld=lld -Wl,--build-id=sha1"
 %define stack_clash_protection -fstack-clash-protection
 %endif
 export CFLAGS="-O2 -g -pipe -Wall -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fexceptions -fstack-protector-strong -m64 -mtune=generic -fasynchronous-unwind-tables %{stack_clash_protection} %{cf_protection} -gdwarf-4"
-export CXXFLAGS="-O2 -g -pipe -Wall -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fexceptions -fstack-protector-strong -m64 -mtune=generic -fasynchronous-unwind-tables %{stack_clash_protection} %{cf_protection} -gdwarf-4"
+# Adding -Wno-deprecated-declarations -Wno-deprecated-builtins as boost generates tonnes of warnings
+export CXXFLAGS="-O2 -g -pipe -Wall -Wno-deprecated-declarations -Wno-deprecated-builtins -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fexceptions -fstack-protector-strong -m64 -mtune=generic -fasynchronous-unwind-tables %{stack_clash_protection} %{cf_protection} -gdwarf-4"
 %endif
 
 # Note that the RPM meson macro "helpfully" sets
 # --auto-features=enabled so our auto-detection is broken
+# disably fortify as it is handled by package build infra
 %meson \
     --sysconfdir=%{_sysconfdir}/%{name} \
     -Dunit-tests=true \
     -Db_lto=true \
     -Db_lto_mode=thin \
     -Db_pie=true \
+    -Dhardening-fortify-source=disabled \
     -Ddns-over-tls=enabled \
     -Ddnstap=enabled \
     -Dlibcap=enabled \
