@@ -387,9 +387,8 @@ public:
   DNSAction::Action operator()(DNSQuestion* dnsquestion, std::string* ruleresult) const override
   {
     (void)ruleresult;
+    dnsdist::self_answers::removeRecordsAndSetRCode(*dnsquestion, d_rcode);
     dnsdist::PacketMangling::editDNSHeaderFromPacket(dnsquestion->getMutableData(), [this](dnsheader& header) {
-      header.rcode = d_rcode;
-      header.qr = true; // for good measure
       setResponseHeadersFromConfig(header, d_responseConfig);
       return true;
     });
@@ -415,9 +414,8 @@ public:
   DNSAction::Action operator()(DNSQuestion* dnsquestion, std::string* ruleresult) const override
   {
     (void)ruleresult;
+    dnsdist::self_answers::removeRecordsAndSetRCode(*dnsquestion, (d_rcode & 0xF));
     dnsdist::PacketMangling::editDNSHeaderFromPacket(dnsquestion->getMutableData(), [this](dnsheader& header) {
-      header.rcode = (d_rcode & 0xF);
-      header.qr = true; // for good measure
       setResponseHeadersFromConfig(header, d_responseConfig);
       return true;
     });
@@ -1018,13 +1016,38 @@ public:
   DNSAction::Action operator()(DNSQuestion* dnsquestion, std::string* ruleresult) const override
   {
     (void)ruleresult;
-    setEDNSOption(*dnsquestion, d_code, d_data);
+    setEDNSOption(*dnsquestion, d_code, d_data, true);
     return Action::None;
   }
 
   [[nodiscard]] std::string toString() const override
   {
     return "add EDNS Option (code=" + std::to_string(d_code) + ")";
+  }
+
+private:
+  uint16_t d_code;
+  std::string d_data;
+};
+
+class SetEDNSOptionResponseAction : public DNSResponseAction
+{
+public:
+  // this action does not stop the processing
+  SetEDNSOptionResponseAction(uint16_t code, std::string data) :
+    d_code(code), d_data(std::move(data))
+  {
+  }
+
+  DNSResponseAction::Action operator()(DNSResponse* response, [[maybe_unused]] std::string* ruleresult) const override
+  {
+    setEDNSOption(*response, d_code, d_data, false);
+    return Action::None;
+  }
+
+  [[nodiscard]] std::string toString() const override
+  {
+    return "add EDNS Option to response (code=" + std::to_string(d_code) + ")";
   }
 
 private:
@@ -2524,8 +2547,6 @@ std::shared_ptr<DNSAction> getTeeAction(const ComboAddress& rca, std::optional<C
   return std::shared_ptr<DNSAction>(new TeeAction(rca, lca, addECS, addProxyProtocol));
 }
 
-// NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "dnsdist-actions-factory-generated.cc"
-// NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "dnsdist-response-actions-factory-generated.cc"
+#include "dnsdist-actions-factory-generated-body.hh"
+#include "dnsdist-response-actions-factory-generated-body.hh"
 }

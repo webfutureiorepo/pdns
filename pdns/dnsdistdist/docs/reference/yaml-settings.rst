@@ -117,7 +117,7 @@ General settings for frontends
 - **threads**: Unsigned integer ``(1)`` - Number of listening threads to create for this frontend. Note that each listening thread will have its own metrics, but identical DoT and DoH threads will share the same TLS Session Ticket Encryption Keys to improve session resumption rates. One side-effect is that rotating / altering the STEKs on all threads in a frontend group except the first one will be ignored, to prevent unwanted actions by existing code. :func:`reloadAllCertificates` properly handles frontend groups.
 - **interface**: String ``("")`` - Set the network interface to use
 - **cpus**: String ``("")`` - Set the CPU affinity for this listener thread, asking the scheduler to run it on a single CPU id, or a set of CPU ids. This parameter is only available if the OS provides the ``pthread_setaffinity_np()`` function
-- **enable_proxy_protocol**: Boolean ``(false)`` - Whether to expect a proxy protocol v2 header in front of incoming queries coming from an address allowed by the ACL in :ref:`yaml-settings-ProxyProtocolConfiguration`. Default is ``true``, meaning that queries are expected to have a proxy protocol payload if they come from an address present in the proxy protocol ACL
+- **enable_proxy_protocol**: Boolean ``(true)`` - Whether to expect a proxy protocol v2 header in front of incoming queries coming from an address allowed by the ACL in :ref:`yaml-settings-ProxyProtocolConfiguration`. Default is ``true``, meaning that queries are expected to have a proxy protocol payload if they come from an address present in the proxy protocol ACL
 - **tcp**: :ref:`IncomingTcpConfiguration <yaml-settings-IncomingTcpConfiguration>` - TCP-specific settings
 - **tls**: :ref:`IncomingTlsConfiguration <yaml-settings-IncomingTlsConfiguration>` - TLS-specific settings
 - **doh**: :ref:`IncomingDohConfiguration <yaml-settings-IncomingDohConfiguration>` - DNS over HTTPS-specific settings
@@ -744,6 +744,7 @@ Packet-cache settings
 - **cookie_hashing**: Boolean ``(false)`` - If true, EDNS Cookie values will be hashed, resulting in separate entries for different cookies in the packet cache. This is required if the backend is sending answers with EDNS Cookies, otherwise a client might receive an answer with the wrong cookie
 - **maximum_entry_size**: Unsigned integer ``(4096)`` - The maximum size, in bytes, of a DNS packet that can be inserted into the packet cache
 - **options_to_skip**: Sequence of String ``("")`` - Extra list of EDNS option codes to skip when hashing the packet (if ``cookie_hashing`` above is false, EDNS cookie option number will be added to this list internally)
+- **payload_ranks**: Sequence of Unsigned integer ``([])`` - List of payload size used when hashing the packet. The list will be sorted in ascend order and searched to find a lower bound value for the payload size in the packet. If found then it will be used for packet hashing. Values less than 512 or greater than ``maximum_entry_size`` above will be discarded. This option is to enable cache entry sharing between clients using different payload sizes when needed
 
 
 .. _yaml-settings-PoolConfiguration:
@@ -792,7 +793,7 @@ ProxyProtocolConfiguration
 Proxy Protocol-related settings
 
 - **acl**: Sequence of String ``("")`` - Set the list of netmasks from which a Proxy Protocol header will be required, over UDP, TCP and DNS over TLS. The default is empty. Note that a proxy protocol payload will be required from these clients, regular DNS queries will no longer be accepted if they are not preceded by a proxy protocol payload. Be also aware that, if ``apply_acl_to_proxied_clients`` is set (default is false), the general ACL will be applied to the source IP address as seen by dnsdist first, but also to the source IP address provided in the Proxy Protocol header.
-- **maximum_payload_size**: Unsigned integer ``(512)`` - Set the maximum size of a Proxy Protocol payload that dnsdist is willing to accept, in bytes. The default is 512, which is more than enough except for very large TLV data. This setting can’t be set to a value lower than 16 since it would deny of Proxy Protocol headers
+- **maximum_payload_size**: Unsigned integer ``(512)`` - Set the maximum size of a Proxy Protocol payload that dnsdist is willing to accept, in bytes. The default is 512, which is more than enough except for very large TLV data. This setting can’t be set to a value lower than 16 - the absolute minimum size of a Proxy Protocol header
 - **apply_acl_to_proxied_clients**: Boolean ``(false)`` - Whether the general ACL should be applied to the source IP address provided in the Proxy Protocol header, in addition to being applied to the source IP address as seen by dnsdist first
 
 
