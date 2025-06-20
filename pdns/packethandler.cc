@@ -1020,24 +1020,19 @@ void PacketHandler::addNSEC(DNSPacket& /* p */, std::unique_ptr<DNSPacket>& r, c
 
 - only one backend owns the SOA of a zone
 - only one AXFR per zone at a time - double startTransaction should fail
-- backends need to implement transaction semantics
+- backends implement transaction semantics
 
-
-How BindBackend would implement this:
+How BindBackend implements this:
    startTransaction makes a file
    feedRecord sends everything to that file
    commitTransaction moves that file atomically over the regular file, and triggers a reload
-   rollbackTransaction removes the file
+   abortTransaction removes the file
 
-
-How PostgreSQLBackend would implement this:
-   startTransaction starts a sql transaction, which also deletes all records
+How SQL backends implement this:
+   startTransaction starts a sql transaction, which also deletes all records if requested
    feedRecord is an insert statement
    commitTransaction commits the transaction
-   rollbackTransaction aborts it
-
-How MySQLBackend would implement this:
-   (good question!)
+   abortTransaction aborts it
 
 */
 
@@ -1770,7 +1765,7 @@ bool PacketHandler::opcodeQueryInner2(DNSPacket& pkt, queryState &state, bool re
   /* Add in SOA if required */
   if(state.target==d_sd.qname()) {
       zrr=makeEditedDNSZRFromSOAData(d_dk, d_sd);
-      rrset.push_back(zrr);
+      rrset.push_back(std::move(zrr));
   }
 
   DLOG(g_log<<"After first ANY query for '"<<state.target<<"', id="<<d_sd.domain_id<<": weDone="<<weDone<<", weHaveUnauth="<<weHaveUnauth<<", weRedirected="<<weRedirected<<", haveAlias='"<<haveAlias<<"'"<<endl);
@@ -1828,7 +1823,7 @@ bool PacketHandler::opcodeQueryInner2(DNSPacket& pkt, queryState &state, bool re
     if(tryWildcard(pkt, state.r, state.target, wildcard, wereRetargeted, nodata)) {
       if(wereRetargeted) {
         if (!retargeted) {
-          state.r->qdomainwild=wildcard;
+          state.r->qdomainwild=std::move(wildcard);
         }
         state.retargeted = true;
         return true;
@@ -1905,7 +1900,7 @@ bool PacketHandler::opcodeQueryInner2(DNSPacket& pkt, queryState &state, bool re
       return true;
     }
     // check whether this could be fixed easily
-    // if (*(zrr.dr.d_name.rbegin()) == '.') {
+    // if (*(rrset.back().dr.d_name.rbegin()) == '.') {
     //      g_log<<Logger::Error<<"Should not get here ("<<pkt.qdomain<<"|"<<pkt.qtype.toString()<<"): you have a trailing dot, this could be the problem (or run pdnsutil rectify-zone " <<d_sd.qname()<<")"<<endl;
     // } else {
          g_log<<Logger::Error<<"Should not get here ("<<pkt.qdomain<<"|"<<pkt.qtype.toString()<<"): please run pdnsutil rectify-zone "<<d_sd.qname()<<endl;

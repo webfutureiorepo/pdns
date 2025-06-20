@@ -896,6 +896,7 @@ bool SyncRes::doSpecialNamesResolve(const DNSName& qname, const QType qtype, con
         ans << "\"";
         answers.emplace_back(QType::TXT, ans.str());
       }
+      d_wasVariable = true;
     }
   }
 
@@ -908,11 +909,12 @@ bool SyncRes::doSpecialNamesResolve(const DNSName& qname, const QType qtype, con
         ans << "\"";
         ans << negAnchor.first.toString(); // Explicit toString to have a trailing dot
         if (negAnchor.second.length() != 0) {
-          ans << " " << negAnchor.second;
+          ans << " " << txtEscape(negAnchor.second);
         }
         ans << "\"";
         answers.emplace_back(QType::TXT, ans.str());
       }
+      d_wasVariable = true;
     }
   }
 
@@ -1088,6 +1090,13 @@ bool SyncRes::isRecursiveForwardOrAuth(const DNSName& qname)
   DNSName authname(qname);
   const auto iter = getBestAuthZone(&authname);
   return iter != t_sstorage.domainmap->end() && (iter->second.isAuth() || iter->second.shouldRecurse());
+}
+
+bool SyncRes::isRecursiveForward(const DNSName& qname)
+{
+  DNSName authname(qname);
+  const auto iter = getBestAuthZone(&authname);
+  return iter != t_sstorage.domainmap->end() && iter->second.shouldRecurse();
 }
 
 bool SyncRes::isForwardOrAuth(const DNSName& qname)

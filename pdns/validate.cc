@@ -973,14 +973,16 @@ dState getDenial(const cspmap_t &validrrsets, const DNSName& qname, const uint16
 
 bool isRRSIGNotExpired(const time_t now, const RRSIGRecordContent& sig)
 {
-  // Should use https://www.rfc-editor.org/rfc/rfc4034.txt section 3.1.5
-  return sig.d_sigexpire >= now;
+  // it's an uint32_t rfc1982 compare, explicitly cast now to uint32_t to avoid Coverity warning
+  // implicitly converting a time_t to a smaller int.
+  return rfc1982LessThanOrEqual<uint32_t>(static_cast<uint32_t>(now), sig.d_sigexpire);
 }
 
 bool isRRSIGIncepted(const time_t now, const RRSIGRecordContent& sig)
 {
-  // Should use https://www.rfc-editor.org/rfc/rfc4034.txt section 3.1.5
-  return sig.d_siginception - g_signatureInceptionSkew <= now;
+  // it's an uint32_t rfc1982 compare, explicitly cast now to uint32_t to avoid Coverity warning
+  // implicitly converting a time_t to a smaller int.
+  return rfc1982LessThanOrEqual<uint32_t>(sig.d_siginception - g_signatureInceptionSkew, static_cast<uint32_t>(now));
 }
 
 namespace {
@@ -990,10 +992,17 @@ namespace {
      - The validator's notion of the current time MUST be less than or equal to the time listed in the RRSIG RR's Expiration field.
      - The validator's notion of the current time MUST be greater than or equal to the time listed in the RRSIG RR's Inception field.
   */
-  if (isRRSIGIncepted(now, sig) && isRRSIGNotExpired(now, sig)) {
+  vState localEDE = vState::Indeterminate;
+  if (!isRRSIGIncepted(now, sig)) {
+    localEDE = vState::BogusSignatureNotYetValid;
+  }
+  else if (!isRRSIGNotExpired(now, sig)) {
+    localEDE = vState::BogusSignatureExpired;
+  }
+  if (localEDE == vState::Indeterminate) {
     return true;
   }
-  ede = ((sig.d_siginception - g_signatureInceptionSkew) > now) ? vState::BogusSignatureNotYetValid : vState::BogusSignatureExpired;
+  ede = localEDE;
   VLOG(log, qname << ": Signature is "<<(ede == vState::BogusSignatureNotYetValid ? "not yet valid" : "expired")<<" (inception: "<<sig.d_siginception<<", inception skew: "<<g_signatureInceptionSkew<<", expiration: "<<sig.d_sigexpire<<", now: "<<now<<")"<<endl);
   return false;
 }

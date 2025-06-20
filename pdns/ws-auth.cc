@@ -20,6 +20,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #include "dnsbackend.hh"
+#include "iputils.hh"
 #include "webserver.hh"
 #include <array>
 #include <string_view>
@@ -2045,7 +2046,7 @@ static void apiServerZonesGET(HttpRequest* req, HttpResponse* resp)
     zonename.makeUsLowerCase();
     DomainInfo domainInfo;
     if (backend.getDomainInfo(zonename, domainInfo)) {
-      domains.push_back(domainInfo);
+      domains.push_back(std::move(domainInfo));
     }
   }
   else {
@@ -2721,7 +2722,10 @@ static void apiServerViewsPOST(HttpRequest* req, HttpResponse* resp)
   }
   // Purge packet cache for that zone
   if (PC.enabled()) {
-    (void)PC.purgeExact(view, zonename.operator const DNSName&());
+    // Note that this relies upon ZoneName::toString NOT emitting the variant name.
+    std::string purgename = zonename.toString();
+    purgename.append("$");
+    (void)PC.purge(view, purgename);
   }
 
   resp->body = "";
@@ -2738,12 +2742,21 @@ static void apiServerViewsDELETE(HttpRequest* req, HttpResponse* resp)
     throw ApiException("Failed to remove " + zoneData.zoneName.toStringFull() + " from view " + view);
   }
   // Notify zone cache of the removed association
+  bool emptyView{false};
   if (g_zoneCache.isEnabled()) {
-    g_zoneCache.removeFromView(view, zoneData.zoneName);
+    emptyView = g_zoneCache.removeFromView(view, zoneData.zoneName);
   }
   // Purge packet cache for that zone
   if (PC.enabled()) {
-    (void)PC.purgeExact(view, zoneData.zoneName.operator const DNSName&());
+    if (emptyView) {
+      (void)PC.purgeView(view);
+    }
+    else {
+      // Note that this relies upon ZoneName::toString NOT emitting the variant name.
+      std::string purgename = zoneData.zoneName.toString();
+      purgename.append("$");
+      (void)PC.purge(view, purgename);
+    }
   }
 
   resp->body = "";
@@ -2760,7 +2773,12 @@ static void apiServerNetworksGET(HttpRequest* req, HttpResponse* resp)
   if (req->parameters.count("ip") != 0 && req->parameters.count("prefixlen") != 0) {
     std::string subnet{req->parameters["ip"]};
     std::string prefixlen{req->parameters["prefixlen"]};
-    network = subnet + "/" + prefixlen;
+    try {
+      network = subnet + "/" + prefixlen;
+    }
+    catch (NetmaskException& e) {
+      throw ApiException(e.reason);
+    }
   }
 
   UeberBackend backend;
@@ -2792,7 +2810,13 @@ static void apiServerNetworksPUT(HttpRequest* req, HttpResponse* resp)
 {
   std::string subnet{req->parameters["ip"]};
   std::string prefixlen{req->parameters["prefixlen"]};
-  Netmask network(subnet + "/" + prefixlen);
+  Netmask network;
+  try {
+    network = subnet + "/" + prefixlen;
+  }
+  catch (NetmaskException& e) {
+    throw ApiException(e.reason);
+  }
 
   const auto& document = req->json();
   std::string view = stringFromJson(document, "view");

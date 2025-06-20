@@ -19,15 +19,27 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#pragma once
 
-#include "dnsdist.hh"
-#include "dnsdist-dnsparser.hh"
+#include <vector>
+#include <string>
 
-namespace dnsdist::self_answers
+#include "config.h"
+
+namespace dnsdist::console::completion
 {
-bool generateAnswerFromCNAME(DNSQuestion& dnsQuestion, const DNSName& cname, const dnsdist::ResponseConfig& responseConfig);
-bool generateAnswerFromIPAddresses(DNSQuestion& dnsQuestion, const std::vector<ComboAddress>& addresses, const ResponseConfig& responseConfig);
-bool generateAnswerFromRDataEntries(DNSQuestion& dnsQuestion, const std::vector<std::string>& entries, std::optional<uint16_t> typeForAny, const ResponseConfig& responseConfig);
-bool generateAnswerFromRawPacket(DNSQuestion& dnsQuestion, const PacketBuffer& packet);
-bool removeRecordsAndSetRCode(DNSQuestion& dnsQuestion, uint8_t rcode);
+#ifndef DISABLE_COMPLETION
+struct ConsoleKeyword
+{
+  std::string name;
+  bool function;
+  std::string parameters;
+  std::string description;
+
+  std::string toString() const;
+};
+
+const std::vector<ConsoleKeyword>& getConsoleKeywords();
+#endif /* DISABLE_COMPLETION */
+void setupCompletion();
 }

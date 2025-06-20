@@ -694,7 +694,7 @@ Servers
 
     ``qps``                                  ``number``            "Limit the number of queries per second to ``number``, when using the `firstAvailable` policy"
     ``order``                                ``number``            "The order of this server, used by the `leastOutstanding` and `firstAvailable` policies"
-    ``weight``                               ``number``            "The weight of this server, used by the `wrandom`, `whashed` and `chashed` policies, default: 1. Supported values are a minimum of 1, and a maximum of 2147483647."
+    ``weight``                               ``number``            "The weight of this server, used by the `wrandom`, `whashed`, `chashed` and `orderedWrandUntag` policies, default: 1. Supported values are a minimum of 1, and a maximum of 2147483647."
     ``udpTimeout``                           ``number``            "The timeout (in seconds) of a UDP query attempt"
     ``pool``                                 ``string|{string}``   "The pools this server belongs to (unset or empty string means default pool) as a string or table of strings"
     ``retries``                              ``number``            "The number of TCP connection attempts to the backend, for a given query"
@@ -1042,6 +1042,9 @@ See :doc:`../guides/cache` for a how to.
   .. versionchanged:: 2.0.0
     ``truncatedTTL`` parameter added.
 
+  .. versionchanged:: 2.0.0
+    ``payloadRanks`` parameter added.
+
   Creates a new :class:`PacketCache` with the settings specified.
 
   :param int maxEntries: The maximum number of entries in this cache
@@ -1062,6 +1065,7 @@ See :doc:`../guides/cache` for a how to.
   * ``cookieHashing=false``: bool - If true, EDNS Cookie values will be hashed, resulting in separate entries for different cookies in the packet cache. This is required if the backend is sending answers with EDNS Cookies, otherwise a client might receive an answer with the wrong cookie.
   * ``skipOptions={}``: Extra list of EDNS option codes to skip when hashing the packet (if ``cookieHashing`` above is false, EDNS cookie option number will be added to this list internally).
   * ``maximumEntrySize=4096``: int - The maximum size, in bytes, of a DNS packet that can be inserted into the packet cache. Default is 4096 bytes, which was the fixed size before 1.9.0, and is also a hard limit for UDP responses.
+  * ``payloadRanks={}``: List of payload size used when hashing the packet. The list will be sorted in ascending order and searched to find a lower bound value for the payload size in the packet. If found then it will be used for packet hashing. Values less than 512 or greater than ``maximumEntrySize`` above will be discarded. This option is to enable cache entry sharing between clients using different payload sizes when needed.
 
 .. class:: PacketCache
 
@@ -2332,7 +2336,7 @@ Other functions
 
   .. versionadded:: 1.6.0
 
-  Set the maximum size of a Proxy Protocol payload that dnsdist is willing to accept, in bytes. The default is 512, which is more than enough except for very large TLV data. This setting can't be set to a value lower than 16 since it would deny of Proxy Protocol headers.
+  Set the maximum size of a Proxy Protocol payload that dnsdist is willing to accept, in bytes. The default is 512, which is more than enough except for very large TLV data. This setting can't be set to a value lower than 16 - the absolute minimum size of a Proxy Protocol header.
 
   :param int size: The maximum size in bytes (default is 512)
 

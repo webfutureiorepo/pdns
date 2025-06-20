@@ -249,6 +249,8 @@ bool Bind2Backend::startTransaction(const ZoneName& qname, domainid_t domainId)
 
 bool Bind2Backend::commitTransaction()
 {
+  // d_transaction_id is only set to a valid domain id if we are actually
+  // setting up a replacement zone file with the updated data.
   if (d_transaction_id == UnknownDomainID) {
     return false;
   }
@@ -268,9 +270,8 @@ bool Bind2Backend::commitTransaction()
 
 bool Bind2Backend::abortTransaction()
 {
-  // -1 = dnssec speciality
-  // 0  = invalid transact
-  // >0 = actual transaction
+  // d_transaction_id is only set to a valid domain id if we are actually
+  // setting up a replacement zone file with the updated data.
   if (d_transaction_id != UnknownDomainID) {
     unlink(d_transaction_tmpname.c_str());
     d_of.reset();
@@ -889,7 +890,7 @@ void Bind2Backend::doEmptyNonTerminals(std::shared_ptr<recordstorage_t>& records
 
 void Bind2Backend::loadConfig(string* status) // NOLINT(readability-function-cognitive-complexity) 13379 https://github.com/PowerDNS/pdns/issues/13379 Habbie: zone2sql.cc, bindbackend2.cc: reduce complexity
 {
-  static int domain_id = 1;
+  static domainid_t domain_id = 1;
 
   if (!getArg("config").empty()) {
     BindParser BP;

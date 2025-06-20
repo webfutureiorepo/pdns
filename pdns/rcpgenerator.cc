@@ -251,7 +251,7 @@ void RecordTextReader::xfr8BitInt(uint8_t &val)
 }
 
 // this code should leave all the escapes around
-void RecordTextReader::xfrName(DNSName& val, bool, bool)
+void RecordTextReader::xfrName(DNSName& val, [[maybe_unused]] bool compress)
 {
   skipSpaces();
   DNSName sval;
@@ -793,7 +793,7 @@ void RecordTextWriter::xfr8BitInt(const uint8_t& val)
 }
 
 // should not mess with the escapes
-void RecordTextWriter::xfrName(const DNSName& val, bool /* unused */, bool /* noDot */)
+void RecordTextWriter::xfrName(const DNSName& val, bool /* unused */)
 {
   if(!d_string.empty())
     d_string.append(1,' ');
@@ -836,27 +836,6 @@ void RecordTextWriter::xfrHexBlob(const string& val, bool)
     snprintf(tmp, sizeof(tmp), "%02x", (unsigned char)val[n]);
     d_string+=tmp;
   }
-}
-
-// FIXME copied from dnsparser.cc, see #6010 and #3503 if you want a proper solution
-static string txtEscape(const string &name)
-{
-  string ret;
-  char ebuf[5];
-
-  for(char i : name) {
-    if((unsigned char) i >= 127 || (unsigned char) i < 32) {
-      snprintf(ebuf, sizeof(ebuf), "\\%03u", (unsigned char)i);
-      ret += ebuf;
-    }
-    else if(i=='"' || i=='\\'){
-      ret += '\\';
-      ret += i;
-    }
-    else
-      ret += i;
-  }
-  return ret;
 }
 
 void RecordTextWriter::xfrSVCBValueList(const vector<string> &val) {
