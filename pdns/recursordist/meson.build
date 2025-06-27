@@ -135,6 +135,7 @@ common_sources += files(
   src_dir / 'negcache.cc',
   src_dir / 'nsecrecords.cc',
   src_dir / 'protozero.cc',
+  src_dir / 'protozero-trace.cc',
   src_dir / 'proxy-protocol.cc',
   src_dir / 'pubsuffixloader.cc',
   src_dir / 'qtype.cc',
@@ -353,12 +354,14 @@ librec_signers_openssl = declare_dependency(
 pubsuffix_dl_source =  'effective_tld_names.dat'
 pubsuffix_cc = src_dir / 'pubsuffix.cc'
 if not fs.is_file(pubsuffix_cc)
-  curl_command = find_program('curl', required: true)
-  pubsuffix_dl_source = custom_target(
-    'pubsuffix-dl',
-    command: [curl_command, '-s', '-S', '-o', '@OUTPUT@', 'https://publicsuffix.org/list/public_suffix_list.dat'],
-    output: pubsuffix_dl_source
-  )
+  if not fs.is_file(pubsuffix_dl_source)
+    curl_command = find_program('curl', required: true)
+    pubsuffix_dl_source = custom_target(
+      'pubsuffix-dl',
+      command: [curl_command, '-s', '-S', '-o', '@OUTPUT@', 'https://publicsuffix.org/list/public_suffix_list.dat'],
+      output: pubsuffix_dl_source
+    )
+  endif
 
   mkpubsuffix_command = find_program('mkpubsuffixcc', required: true)
   pubsuffix_cc = custom_target(
@@ -491,6 +494,7 @@ test_sources += files(
       src_dir / 'test-mtasker.cc',
       src_dir / 'test-negcache_cc.cc',
       src_dir / 'test-packetcache_hh.cc',
+      src_dir / 'test-protozero-trace.cc',
       src_dir / 'test-rcpgenerator_cc.cc',
       src_dir / 'test-rec-system-resolve.cc',
       src_dir / 'test-rec-taskqueue.cc',
@@ -534,6 +538,7 @@ if get_option('unit-tests')
           dep_boost_test,
           dep_lua,
           dep_nod,
+          dep_protozero,
           dep_recrust,
           dep_rust_recrust,
           librec_signers_openssl,
@@ -593,7 +598,8 @@ foreach tool, info: tools
 endforeach
 
 if get_option('unit-tests')
-  test('testrunner', testrunner)
+  # default timeout of 30s is too short for some ubicloud targets. Unknown *why* they are so slow.
+  test('testrunner', testrunner, timeout: 120)
 endif
 
 # Man-pages.

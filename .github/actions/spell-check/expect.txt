@@ -1205,6 +1205,7 @@ rsasha
 Rueckert
 rulesets
 runtimedir
+rustc
 rustup
 Ruthensteiner
 Rvd
@@ -1439,9 +1440,11 @@ tolua
 Toosarani
 Toshifumi
 totms
+traceid
 Travaille
 treemacs
 tribool
+trixie
 trustanchor
 trustanchorfile
 trusteer

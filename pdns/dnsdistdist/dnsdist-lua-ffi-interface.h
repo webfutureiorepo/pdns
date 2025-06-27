@@ -163,6 +163,7 @@ void dnsdist_ffi_dnsresponse_set_max_returned_ttl(dnsdist_ffi_dnsresponse_t* dr,
 void dnsdist_ffi_dnsresponse_clear_records_type(dnsdist_ffi_dnsresponse_t* dr, uint16_t qtype) __attribute__ ((visibility ("default")));
 bool dnsdist_ffi_dnsresponse_rebase(dnsdist_ffi_dnsresponse_t* dr, const char* initialName, size_t initialNameSize) __attribute__ ((visibility ("default")));
 bool dnsdist_ffi_dnsresponse_get_stale_cache_hit(const dnsdist_ffi_dnsresponse_t* dnsResponse) __attribute__ ((visibility ("default")));
+uint8_t dnsdist_ffi_dnsresponse_get_restart_count(const dnsdist_ffi_dnsresponse_t* dnsResponse) __attribute__ ((visibility ("default")));
 
 bool dnsdist_ffi_dnsquestion_set_async(dnsdist_ffi_dnsquestion_t* dq, uint16_t asyncID, uint16_t queryID, uint32_t timeoutMs) __attribute__ ((visibility ("default")));
 bool dnsdist_ffi_dnsresponse_set_async(dnsdist_ffi_dnsquestion_t* dq, uint16_t asyncID, uint16_t queryID, uint32_t timeoutMs) __attribute__ ((visibility ("default")));
@@ -305,3 +306,12 @@ void dnsdist_ffi_svc_record_parameters_add_ipv6_hint(dnsdist_ffi_svc_record_para
 void dnsdist_ffi_svc_record_parameters_free(dnsdist_ffi_svc_record_parameters* parameters) __attribute__ ((visibility ("default")));
 
 bool dnsdist_ffi_dnsquestion_generate_svc_response(dnsdist_ffi_dnsquestion_t* dnsQuestion, const dnsdist_ffi_svc_record_parameters** parametersList, size_t parametersListSize, uint32_t ttl) __attribute__ ((visibility ("default")));
+
+/* this function adds a new key to the raw meta buffer. It can only be called with the same key on a given query once, and dnsdist_ffi_dnsquestion_meta_end_key should always be called after values have been added */
+void dnsdist_ffi_dnsquestion_meta_begin_key(dnsdist_ffi_dnsquestion_t* dnsQuestion, const char* key, size_t keyLen) __attribute__ ((visibility ("default")));
+/* this function should never be called if dnsdist_ffi_dnsquestion_meta_begin_key has not been called first */
+void dnsdist_ffi_dnsquestion_meta_add_str_value_to_key(dnsdist_ffi_dnsquestion_t* dnsQuestion, const char* value, size_t valueLen) __attribute__ ((visibility ("default")));
+/* this function should never be called if dnsdist_ffi_dnsquestion_meta_begin_key has not been called first */
+void dnsdist_ffi_dnsquestion_meta_add_int64_value_to_key(dnsdist_ffi_dnsquestion_t* dnsQuestion, int64_t value) __attribute__ ((visibility ("default")));
+/* this function should never be called if dnsdist_ffi_dnsquestion_meta_begin_key has not been called first */
+void dnsdist_ffi_dnsquestion_meta_end_key(dnsdist_ffi_dnsquestion_t* dnsQuestion) __attribute__ ((visibility ("default")));

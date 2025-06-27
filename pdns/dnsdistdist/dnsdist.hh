@@ -176,6 +176,9 @@ public:
   InternalQueryState& ids;
   std::unique_ptr<Netmask> ecs{nullptr};
   std::string sni; /* Server Name Indication, if any (DoT or DoH) */
+#if !defined(DISABLE_PROTOBUF)
+  std::string d_rawProtobufContent; /* protobuf-encoded content to add to protobuf messages */
+#endif /* DISABLE_PROTOBUF */
   mutable std::unique_ptr<EDNSOptionViewMap> ednsOptions; /* this needs to be mutable because it is parsed just in time, when DNSQuestion is read-only */
   std::shared_ptr<IncomingTCPConnectionState> d_incomingTCPState{nullptr};
   std::unique_ptr<std::vector<ProxyProtocolValue>> proxyProtocolValues{nullptr};
@@ -184,6 +187,7 @@ public:
   bool ecsOverride;
   bool useECS{true};
   bool asynchronous{false};
+  bool d_selfGeneratedHandledEDNS{false};
 };
 
 struct DownstreamState;
@@ -1027,3 +1031,4 @@ bool sendUDPResponse(int origFD, const PacketBuffer& response, const int delayMs
 void handleResponseSent(const DNSName& qname, const QType& qtype, double udiff, const ComboAddress& client, const ComboAddress& backend, unsigned int size, const dnsheader& cleartextDH, dnsdist::Protocol outgoingProtocol, dnsdist::Protocol incomingProtocol, bool fromBackend);
 void handleResponseSent(const InternalQueryState& ids, double udiff, const ComboAddress& client, const ComboAddress& backend, unsigned int size, const dnsheader& cleartextDH, dnsdist::Protocol outgoingProtocol, bool fromBackend);
 bool handleTimeoutResponseRules(const std::vector<dnsdist::rules::ResponseRuleAction>& rules, InternalQueryState& ids, const std::shared_ptr<DownstreamState>& ds, const std::shared_ptr<TCPQuerySender>& sender);
+void handleServerStateChange(const std::string& nameWithAddr, bool newResult);

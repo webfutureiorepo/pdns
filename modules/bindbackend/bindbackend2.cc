@@ -249,6 +249,8 @@ bool Bind2Backend::startTransaction(const ZoneName& qname, domainid_t domainId)
 
 bool Bind2Backend::commitTransaction()
 {
+  // d_transaction_id is only set to a valid domain id if we are actually
+  // setting up a replacement zone file with the updated data.
   if (d_transaction_id == UnknownDomainID) {
     return false;
   }
@@ -268,15 +270,79 @@ bool Bind2Backend::commitTransaction()
 
 bool Bind2Backend::abortTransaction()
 {
-  // -1 = dnssec speciality
-  // 0  = invalid transact
-  // >0 = actual transaction
+  // d_transaction_id is only set to a valid domain id if we are actually
+  // setting up a replacement zone file with the updated data.
   if (d_transaction_id != UnknownDomainID) {
     unlink(d_transaction_tmpname.c_str());
     d_of.reset();
     d_transaction_id = UnknownDomainID;
   }
 
+  return true;
+}
+
+static bool ciEqual(const string& lhs, const string& rhs)
+{
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+
+  string::size_type pos = 0;
+  const string::size_type epos = lhs.size();
+  for (; pos < epos; ++pos) {
+    if (dns_tolower(lhs[pos]) != dns_tolower(rhs[pos])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** does domain end on suffix? Is smart about "wwwds9a.nl" "ds9a.nl" not matching */
+static bool endsOn(const string& domain, const string& suffix)
+{
+  if (suffix.empty() || ciEqual(domain, suffix)) {
+    return true;
+  }
+
+  if (domain.size() <= suffix.size()) {
+    return false;
+  }
+
+  string::size_type dpos = domain.size() - suffix.size() - 1;
+  string::size_type spos = 0;
+
+  if (domain[dpos++] != '.') {
+    return false;
+  }
+
+  for (; dpos < domain.size(); ++dpos, ++spos) {
+    if (dns_tolower(domain[dpos]) != dns_tolower(suffix[spos])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/** strips a domain suffix from a domain, returns true if it stripped */
+static bool stripDomainSuffix(string* qname, const ZoneName& zonename)
+{
+  std::string domain = zonename.operator const DNSName&().toString();
+
+  if (!endsOn(*qname, domain)) {
+    return false;
+  }
+
+  if (toLower(*qname) == toLower(domain)) {
+    *qname = "@";
+  }
+  else {
+    if ((*qname)[qname->size() - domain.size() - 1] != '.') {
+      return false;
+    }
+
+    qname->resize(qname->size() - domain.size() - 1);
+  }
   return true;
 }
 
@@ -313,7 +379,7 @@ bool Bind2Backend::feedRecord(const DNSResourceRecord& rr, const DNSName& /* ord
   case QType::CNAME:
   case QType::DNAME:
   case QType::NS:
-    stripDomainSuffix(&content, d_transaction_qname.toString());
+    stripDomainSuffix(&content, d_transaction_qname);
     // fallthrough
   default:
     if (d_of && *d_of) {
@@ -581,7 +647,7 @@ string Bind2Backend::DLReloadNowHandler(const vector<string>& parts, Utility::pi
         ret << *i << ": [missing]\n";
       else
         ret << *i << ": " << (bbd.d_wasRejectedLastReload ? "[rejected]" : "") << "\t" << bbd.d_status << "\n";
-      purgeAuthCaches(zone.toString() + "$");
+      purgeAuthCaches(zone.operator const DNSName&().toString() + "$");
       DNSSECKeeper::clearMetaCache(zone);
     }
     else
@@ -889,7 +955,7 @@ void Bind2Backend::doEmptyNonTerminals(std::shared_ptr<recordstorage_t>& records
 
 void Bind2Backend::loadConfig(string* status) // NOLINT(readability-function-cognitive-complexity) 13379 https://github.com/PowerDNS/pdns/issues/13379 Habbie: zone2sql.cc, bindbackend2.cc: reduce complexity
 {
-  static int domain_id = 1;
+  static domainid_t domain_id = 1;
 
   if (!getArg("config").empty()) {
     BindParser BP;
