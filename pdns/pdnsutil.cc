@@ -9,6 +9,8 @@
 #endif
 
 #include <fcntl.h>
+#include <csignal>
+#include <sys/wait.h>
 
 #include "credentials.hh"
 #include "dnsseckeeper.hh"
@@ -1005,7 +1007,7 @@ static int increaseSerial(const ZoneName& zone, DNSSECKeeper &dsk)
       ordername=DNSName("");
     if(g_verbose)
       cerr<<"'"<<rr.qname<<"' -> '"<< ordername <<"'"<<endl;
-    sd.db->updateDNSSECOrderNameAndAuth(sd.domain_id, rr.qname, ordername, true);
+    sd.db->updateDNSSECOrderNameAndAuth(sd.domain_id, rr.qname, ordername, true, QType::ANY, haveNSEC3);
   }
 
   sd.db->commitTransaction();
@@ -1145,7 +1147,7 @@ static int listZone(const ZoneName &zone) {
     return EXIT_FAILURE;
   }
   if ((di.backend->getCapabilities() & DNSBackend::CAP_LIST) == 0) {
-    cerr << "Backend for zone '" << zone << "' does not support listing its contents," << endl;
+    cerr << "Backend for zone '" << zone << "' does not support listing its contents." << endl;
     return EXIT_FAILURE;
   }
 
@@ -1246,6 +1248,66 @@ private:
   bool d_colors;
 };
 
+static bool spawnEditor(const std::string& editor, std::string_view tmpfile, int gotoline, int &result)
+{
+  sigset_t mask;
+  sigset_t omask;
+
+  // Ignore INT, QUIT and CHLD signals while the editor process runs
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGCHLD);
+  sigaddset(&mask, SIGINT);
+  sigaddset(&mask, SIGQUIT);
+  sigprocmask(SIG_BLOCK, &mask, &omask); // NOLINT(concurrency-mt-unsafe)
+
+  switch (pid_t child = fork()) {
+  case 0:
+    {
+      std::array<const char *, 4> args{};
+      size_t pos{0};
+      std::string gotolinestr;
+      args.at(pos++) = editor.c_str();
+      if (gotoline > 0) {
+        // TODO: if editor is 'ed', skip this; if 'ex' or 'vi', use '-c number'
+        gotolinestr = "+" + std::to_string(gotoline);
+        args.at(pos++) = gotolinestr.c_str();
+      }
+      args.at(pos++) = tmpfile.data();
+      args.at(pos++) = nullptr;
+      if (::execvp(args.at(0), const_cast<char **>(args.data())) != 0) { // NOLINT(cppcoreguidelines-pro-type-const-cast)
+        ::exit(errno); // NOLINT(concurrency-mt-unsafe)
+      }
+      // std::unreachable();
+    }
+    break;
+  case -1:
+    unixDie("Couldn't fork");
+    break;
+  default:
+    {
+      pid_t pid{-1};
+      int status{0};
+      do {
+        pid = waitpid(child, &status, 0);
+      } while (pid == -1 && errno == EINTR);
+      sigprocmask(SIG_SETMASK, &omask, nullptr); // NOLINT(concurrency-mt-unsafe)
+      if (pid == -1) {
+        return false;
+      }
+      if (WIFEXITED(status)) {
+        result = WEXITSTATUS(status);
+        return true;
+      }
+      if (WIFSIGNALED(status)) {
+        result = 128 + WTERMSIG(status);
+        return true;
+      }
+    }
+    break;
+  }
+  return false;
+}
+
 static int editZone(const ZoneName &zone, const PDNSColors& col) {
   UtilBackend B; //NOLINT(readability-identifier-length)
   DomainInfo di;
@@ -1256,7 +1318,7 @@ static int editZone(const ZoneName &zone, const PDNSColors& col) {
     return EXIT_FAILURE;
   }
   if ((di.backend->getCapabilities() & DNSBackend::CAP_LIST) == 0) {
-    cerr << "Backend for zone '" << zone << "' does not support listing its contents," << endl;
+    cerr << "Backend for zone '" << zone << "' does not support listing its contents." << endl;
     return EXIT_FAILURE;
   }
 
@@ -1308,7 +1370,6 @@ static int editZone(const ZoneName &zone, const PDNSColors& col) {
   string editor="editor";
   if(auto e=getenv("EDITOR")) // <3
     editor=e;
-  string cmdline;
  editAgain:;
   di.backend->list(zone, di.id);
   pre.clear(); post.clear();
@@ -1338,15 +1399,13 @@ static int editZone(const ZoneName &zone, const PDNSColors& col) {
   }
  editMore:;
   post.clear();
-  cmdline=editor+" ";
-  if(gotoline > 0)
-    cmdline+="+"+std::to_string(gotoline)+" ";
-  cmdline += tmpnam;
-  int err=system(cmdline.c_str());
-  if(err != 0) {
-    unixDie("Editing file with: '"+cmdline+"', perhaps set EDITOR variable");
+  int result{0};
+  if (!spawnEditor(editor, tmpnam, gotoline, result)) { // NOLINT(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    unixDie("Editing file with: '"+editor+"', perhaps set EDITOR variable");
   }
-  cmdline.clear();
+  if (result != 0) {
+    throw std::runtime_error("Editing file with: '" + editor + "' returned non-zero status " + std::to_string(result));
+  }
   ZoneParserTNG zpt(static_cast<const char *>(tmpnam), g_rootzonename);
   zpt.setMaxGenerateSteps(::arg().asNum("max-generate-steps"));
   zpt.setMaxIncludes(::arg().asNum("max-include-depth"));
@@ -1545,6 +1604,21 @@ static int zonemdVerifyFile(const ZoneName& zone, const string& fname) {
   return EXIT_FAILURE;
 }
 
+// Wrapper around UeberBackend::createDomain, which will also set up the
+// default metadata, matching the behaviour of the REST API.
+static bool createZoneWithDefaults(UtilBackend &backend, DomainInfo &info, const ZoneName& zone, DomainInfo::DomainKind kind, const vector<ComboAddress>& primaries)
+{
+  backend.createDomain(zone, kind, primaries, "");
+  if (!backend.getDomainInfo(zone, info)) {
+    cerr << "Zone '" << zone << "' was not created." << endl;
+    return false;
+  }
+  info.backend->startTransaction(zone, static_cast<int>(info.id));
+  info.backend->setDomainMetadataOne(zone, "SOA-EDIT-API", "DEFAULT");
+  info.backend->commitTransaction();
+  return true;
+}
+
 static int loadZone(const ZoneName& zone, const string& fname) {
   UtilBackend B; //NOLINT(readability-identifier-length)
   DomainInfo di;
@@ -1564,15 +1638,13 @@ static int loadZone(const ZoneName& zone, const string& fname) {
       return EXIT_FAILURE;
     }
     cerr<<"Creating '"<<zone<<"'"<<endl;
-    B.createDomain(zone, DomainInfo::Native, vector<ComboAddress>(), "");
-
-    if(!B.getDomainInfo(zone, di)) {
-      cerr << "Zone '" << zone << "' was not created." << endl;
+    if (!createZoneWithDefaults(B, di, zone, DomainInfo::Native, vector<ComboAddress>())) {
       return EXIT_FAILURE;
     }
   }
   DNSBackend* db = di.backend;
   ZoneParserTNG zpt(fname, zone);
+  zpt.setDefaultTTL(::arg().asNum("default-ttl"));
   zpt.setMaxGenerateSteps(::arg().asNum("max-generate-steps"));
 
   DNSResourceRecord rr;
@@ -1634,7 +1706,7 @@ static int createZone(const ZoneName &zone, const DNSName& nsname) {
   rr.qtype = "SOA";
 
   string soa = ::arg()["default-soa-content"];
-  boost::replace_all(soa, "@", zone.toStringNoDot());
+  boost::replace_all(soa, "@", zone.operator const DNSName&().toStringNoDot());
   SOAData sd;
   try {
     fillSOAData(soa, sd);
@@ -1653,9 +1725,7 @@ static int createZone(const ZoneName &zone, const DNSName& nsname) {
   rr.content = makeSOAContent(sd)->getZoneRepresentation(true);
 
   cerr<<"Creating empty zone '"<<zone<<"'"<<endl;
-  B.createDomain(zone, DomainInfo::Native, vector<ComboAddress>(), "");
-  if(!B.getDomainInfo(zone, di)) {
-    cerr << "Zone '" << zone << "' was not created." << endl;
+  if (!createZoneWithDefaults(B, di, zone, DomainInfo::Native, vector<ComboAddress>())) {
     return EXIT_FAILURE;
   }
 
@@ -2193,7 +2263,11 @@ static bool showZone(DNSSECKeeper& dnsseckeeper, const ZoneName& zone, bool expo
       cout<<"This zone is owned by "<<di.account<<endl;
   }
   if (!exportDS) {
-    cout<<"This is a "<<DomainInfo::getKindString(di.kind)<<" zone"<<endl;
+    cout << "This is a " << DomainInfo::getKindString(di.kind) << " zone";
+    if (g_verbose) {
+      cout << " (" << di.id << ")";
+    }
+    cout << endl;
     auto variant = di.zone.getVariant();
     if (!variant.empty()) {
       cout<<"Variant: " << variant << endl;
@@ -2320,25 +2394,25 @@ static bool showZone(DNSSECKeeper& dnsseckeeper, const ZoneName& zone, bool expo
       }
       if (!exportDS) {
         cout << (key.d_flags == 257 ? "KSK" : "ZSK") << ", tag = " << key.getTag() << ", algo = "<<(int)key.d_algorithm << ", bits = " << bits << endl;
-        cout << "DNSKEY = " <<zone.toString()<<" IN DNSKEY "<< key.getZoneRepresentation() << "; ( " + algname + " ) " <<endl;
+        cout << "DNSKEY = " <<zone.operator const DNSName&().toString()<<" IN DNSKEY "<< key.getZoneRepresentation() << "; ( " + algname + " ) " <<endl;
       }
 
       const std::string prefix(exportDS ? "" : "DS = ");
       if (g_verbose) {
-        cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
+        cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
       }
-      cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA256).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
+      cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA256).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
       if (g_verbose) {
         try {
           string output=makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_GOST).getZoneRepresentation();
-          cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( GOST R 34.11-94 digest )" << endl;
+          cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<output<< " ; ( GOST R 34.11-94 digest )" << endl;
         }
         catch(...)
         {}
       }
       try {
         string output=makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA384).getZoneRepresentation();
-        cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( SHA-384 digest )" << endl;
+        cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<output<< " ; ( SHA-384 digest )" << endl;
       }
       catch(...)
       {}
@@ -2373,27 +2447,27 @@ static bool showZone(DNSSECKeeper& dnsseckeeper, const ZoneName& zone, bool expo
 
       if (!exportDS) {
         if (value.second.keyType == DNSSECKeeper::KSK || value.second.keyType == DNSSECKeeper::CSK || ::arg().mustDo("direct-dnskey")) {
-          cout<<DNSSECKeeper::keyTypeToString(value.second.keyType)<<" DNSKEY = "<<zone.toString()<<" IN DNSKEY "<< value.first.getDNSKEY().getZoneRepresentation() << " ; ( "  + algname + " )" << endl;
+          cout<<DNSSECKeeper::keyTypeToString(value.second.keyType)<<" DNSKEY = "<<zone.operator const DNSName&().toString()<<" IN DNSKEY "<< value.first.getDNSKEY().getZoneRepresentation() << " ; ( "  + algname + " )" << endl;
         }
       }
       if (value.second.keyType == DNSSECKeeper::KSK || value.second.keyType == DNSSECKeeper::CSK) {
         const auto &key = value.first.getDNSKEY();
         const std::string prefix(exportDS ? "" : "DS = ");
         if (g_verbose) {
-          cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
+          cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA1).getZoneRepresentation() << " ; ( SHA1 digest )" << endl;
         }
-        cout<<prefix<<zone.toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA256).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
+        cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA256).getZoneRepresentation() << " ; ( SHA256 digest )" << endl;
         if (g_verbose) {
           try {
             string output=makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_GOST).getZoneRepresentation();
-            cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( GOST R 34.11-94 digest )" << endl;
+            cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<output<< " ; ( GOST R 34.11-94 digest )" << endl;
           }
           catch(...)
           {}
         }
         try {
           string output=makeDSFromDNSKey(zone.operator const DNSName&(), key, DNSSECKeeper::DIGEST_SHA384).getZoneRepresentation();
-          cout<<prefix<<zone.toString()<<" IN DS "<<output<< " ; ( SHA-384 digest )" << endl;
+          cout<<prefix<<zone.operator const DNSName&().toString()<<" IN DS "<<output<< " ; ( SHA-384 digest )" << endl;
         }
         catch(...)
         {}
@@ -2587,15 +2661,15 @@ static int testSchema(DNSSECKeeper& dsk, const ZoneName& zone)
   cout<<"Checking underscore ordering"<<endl;
   DNSName before, after;
   db->getBeforeAndAfterNames(di.id, zone, DNSName("z")+zone.operator const DNSName&(), before, after);
-  cout<<"got '"<<before.toString()<<"' < 'z."<<zone.toString()<<"' < '"<<after.toString()<<"'"<<endl;
+  cout<<"got '"<<before.toString()<<"' < 'z."<<zone.operator const DNSName&().toString()<<"' < '"<<after.toString()<<"'"<<endl;
   if(before != DNSName("_underscore")+zone.operator const DNSName&())
   {
-    cout<<"before is wrong, got '"<<before.toString()<<"', expected '_underscore."<<zone.toString()<<"', aborting"<<endl;
+    cout<<"before is wrong, got '"<<before.toString()<<"', expected '_underscore."<<zone.operator const DNSName&().toString()<<"', aborting"<<endl;
     return EXIT_FAILURE;
   }
   if(after != zone.operator const DNSName&())
   {
-    cout<<"after is wrong, got '"<<after.toString()<<"', expected '"<<zone.toString()<<"', aborting"<<endl;
+    cout<<"after is wrong, got '"<<after.toString()<<"', expected '"<<zone.operator const DNSName&().toString()<<"', aborting"<<endl;
     return EXIT_FAILURE;
   }
   cout<<"[+] ordername sorting is correct for names starting with _"<<endl;
@@ -3224,9 +3298,8 @@ static int createSecondaryZone(vector<string>& cmds, const std::string_view syno
     primaries.emplace_back(cmds.at(i), 53);
   }
   cerr << "Creating secondary zone '" << zone << "', with primaries '" << comboAddressVecToString(primaries) << "'" << endl;
-  B.createDomain(zone, DomainInfo::Secondary, primaries, "");
-  if(!B.getDomainInfo(zone, di)) {
-    cerr << "Zone '" << zone << "' was not created." << endl;
+  if (!createZoneWithDefaults(B, di, zone, DomainInfo::Secondary, primaries)) {
+    cerr << "Zone '" << zone << "' was not created!" << endl;
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;
@@ -3382,7 +3455,7 @@ static int secureZone(vector<string>& cmds, const std::string_view synopsis)
   unsigned int zoneErrors=0;
   for(unsigned int n = 1; n < cmds.size(); ++n) { // NOLINT(readability-identifier-length)
     ZoneName zone(cmds.at(n));
-    dk.startTransaction(zone, UnknownDomainID);
+    dk.startTransaction(zone);
     if(secureZone(dk, zone)) {
       mustRectify.push_back(std::move(zone));
     } else {
@@ -4624,7 +4697,14 @@ static int viewAddZone(vector<string>& cmds, const std::string_view synopsis)
   if (!B.viewAddZone(view, zone)) {
     cerr<<"Operation failed."<<endl;
     return 1;
- }
+  }
+  if (!g_quiet) {
+    DomainInfo info;
+    if (!B.getDomainInfo(zone, info)) {
+      cout << "Zone '" << zone << "' does not exist yet."<< endl;
+      cout << "Consider creating it with 'pdnsutil create-zone " << zone << "'" << endl;
+    }
+  }
   return 0;
 }
 
@@ -4894,7 +4974,7 @@ static const std::unordered_map<std::string, commandDispatcher> commands{
    "list-view VIEW",
    "\tList all zones within VIEW"}},
   {"list-views", {true, listViews, GROUP_VIEWS,
-   "list-view",
+   "list-views",
    "\tList all view names"}},
   {"list-zone", {true, listZone, GROUP_ZONE,
    "list-zone ZONE",
@@ -5088,16 +5168,48 @@ try
 
   loadMainConfig(g_vm["config-dir"].as<string>());
 
+  const std::string writtencommand = cmds.at(0);
   const commandDispatcher* dispatcher{nullptr};
-  if (const auto iter = commands.find(cmds.at(0)); iter != commands.end()) {
-    dispatcher = &iter->second;
-  }
-  if (dispatcher == nullptr) {
+  bool exchanged{false};
+  while (true) {
+    // Search for an exact command name.
+    if (const auto iter = commands.find(cmds.at(0)); iter != commands.end()) {
+      dispatcher = &iter->second;
+      break;
+    }
+    // Search for an alias
     if (const auto alias = aliases.find(cmds.at(0)); alias != aliases.end()) {
       if (const auto iter = commands.find(alias->second); iter != commands.end()) {
         dispatcher = &iter->second;
+        break;
       }
     }
+    std::string cmd = cmds.at(0);
+    auto dash = cmd.find('-');
+    // If the command name contains no dash, coalesce with the next argument
+    // and try again.
+    if (dash == std::string::npos && cmds.size() > 1) {
+      cmd.append(1, '-');
+      cmd += cmds.at(1);
+      cmds.erase(cmds.begin());
+      cmds.at(0) = std::move(cmd);
+      continue;
+    }
+    // If the command name contains exactly one dash, exchange both sides
+    // and try again, but only once.
+    if (exchanged) {
+      break;
+    }
+    if (dash != std::string::npos && cmd.find('-', dash + 1) == std::string::npos) {
+      std::string left = cmd.substr(0, dash);
+      std::string right = cmd.substr(dash + 1);
+      right.append(1, '-');
+      right += left;
+      cmds.at(0) = std::move(right);
+      exchanged = true;
+      continue;
+    }
+    break;
   }
   if (dispatcher != nullptr) {
     if (dispatcher->requiresInitialization) {
@@ -5106,7 +5218,7 @@ try
     return dispatcher->handler(cmds, dispatcher->synopsis);
   }
 
-  cerr << "Unknown command '" << cmds.at(0) << "'" << endl;
+  cerr << "Unknown command '" << writtencommand << "'" << endl;
   return 1;
 }
 catch (PDNSException& ae) {

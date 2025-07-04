@@ -30,7 +30,7 @@ Client variables
   otherwise. This is a :class:`Netmask`.
 ``bestwho``
   In absence of ECS, this is set to the IP address of requesting resolver.
-  Otherwise set to the network part of the EDNS Client Subnet supplied by the
+  Otherwise, set to the network part of the EDNS Client Subnet supplied by the
   resolver. This is a :class:`ComboAddress`.
 ``who``
   IP address of requesting resolver as a :class:`ComboAddress`.
@@ -146,6 +146,8 @@ Record creation functions
   This function also works for CNAME or TXT records.
 
 .. function:: pickselfweighted(url, addresses[, options])
+
+  ..  versionadded:: 5.0.0
 
   Selects an IP address from the supplied list, weighted according to the results of `isUp` checks. Each address is evaluated, and if its associated weight (from `isUp`) is greater than 0, it is considered for selection using a weighted hash based on `bestwho`. If no address is "up" the function defaults to a random selection.
 
@@ -501,7 +503,8 @@ Helper functions
   :param string address: The IP address to lookup.
   :param int attr: The attribute identifier for the lookup.
 
-  You can use the following constants as the attribute:
+  From version 5.0.0 onwards, instead of the numerical value of the attribute
+  identifier, you can use the following constants as the attribute:
 
   - `GeoIPQueryAttribute.ASn`
   - `GeoIPQueryAttribute.City`

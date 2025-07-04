@@ -136,7 +136,7 @@ public:
     val=get8BitInt();
   }
 
-  void xfrName(DNSName& name, bool /* compress */ = false, bool /* noDot */ = false)
+  void xfrName(DNSName& name, bool /* compress */ = false)
   {
     name = getName();
   }
@@ -670,3 +670,5 @@ private:
   uint32_t d_notyouroffset;  // only 'moveOffset' can touch this
   const uint32_t&  d_offset; // look.. but don't touch
 };
+
+string txtEscape(const string &name);

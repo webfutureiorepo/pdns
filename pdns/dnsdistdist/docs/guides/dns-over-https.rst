@@ -94,7 +94,7 @@ preferred library for incoming DoH support, because ``h2o`` has unfortunately re
 does not. This is not an issue for actual DNS over HTTPS clients that support HTTP/2, but might be one in setups running dnsdist behind a reverse-proxy that
 does not support HTTP/2, like nginx. We do not plan on implementing HTTP/1, and recommend using HTTP/2 between the reverse-proxy and dnsdist for performance reasons.
 
-For nginx in particular, a possible work-around is to use the `grpc_pass <http://nginx.org/r/grpc_pass>`_ directive as suggested in their `bug tracker <https://trac.nginx.org/nginx/ticket/1875>`_ e.g.::
+For nginx in particular, a possible work-around is to use the `grpc_pass <https://nginx.org/r/grpc_pass>`_ directive as suggested in their `bug tracker <https://trac.nginx.org/nginx/ticket/1875>`_ e.g.::
 
   location /dns-query {
     set $upstream_app dnsdist;
@@ -140,8 +140,8 @@ dnsdist provides a lot of counters to investigate issues:
 Outgoing
 --------
 
-Support for securing the exchanges between dnsdist and the backend will be implemented in 1.7.0, and will lead to all queries, regardless of whether they were initially received by dnsdist over UDP, TCP, DoT or DoH, being forwarded over a secure DNS over HTTPS channel.
-That support can be enabled via the ``dohPath`` parameter of the :func:`newServer` command. Additional parameters control the TLS provider used (``tls``), the validation of the certificate presented by the backend (``caStore``, ``validateCertificates``), the actual TLS ciphers used (``ciphers``, ``ciphersTLS13``) and the SNI value sent (``subjectName``).
+:program:`dnsdist` also supports outgoing DNS-over-HTTPS since 1.7.0. This way, all queries, regardless of whether they were initially received by dnsdist over UDP, TCP, DoT or DoH, are forwarded to the backend over a secure DNS-over-HTTPS channel.
+Such that support can be enabled via the ``dohPath`` parameter of the :func:`newServer` command. Additional parameters control the TLS provider used (``tls``), the validation of the certificate presented by the backend (``caStore``, ``validateCertificates``), the actual TLS ciphers used (``ciphers``, ``ciphersTLS13``) and the SNI value sent (``subjectName``).
 
 .. code-block:: lua
 

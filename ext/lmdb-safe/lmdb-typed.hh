@@ -41,7 +41,7 @@ uint32_t MDBGetMaxID(MDBRWTransaction& txn, MDBDbi& dbi);
  * Return a randomly generated ID that is unique and not zero. May throw if the database
  * is very full.
  */
-uint32_t MDBGetRandomID(MDBRWTransaction& txn, MDBDbi& dbi);
+uint32_t MDBGetRandomID(MDBRWTransaction& txn, MDBDbi& dbi, uint32_t seed=0);
 
 /**
  * This is our serialization interface. It can be specialized for other types.
@@ -158,10 +158,7 @@ struct LMDBIndexOps
     auto scombined = makeCombinedKey(keyConv(d_parent->getMember(type)), idVal);
     MDBInVal combined(scombined);
 
-    int errCode = txn->del(d_idx, combined);
-    if (errCode != 0) {
-      throw std::runtime_error("Error deleting from index: " + std::string(mdb_strerror(errCode)));
-    }
+    txn->del(d_idx, combined);
   }
 
   void openDB(std::shared_ptr<MDBEnv>& env, string_view str, int flags)
@@ -456,7 +453,7 @@ public:
           d_end = true;
         }
         else if(rc != 0) {
-          throw std::runtime_error("in genoperator, " + std::string(mdb_strerror(rc)));
+          throw std::runtime_error("in genoperator, " + MDBError(rc));
         }
         else if(!d_prefix.empty() &&
           // d_key.getNoStripHeader<std::string>().rfind(d_prefix, 0)!=0 &&
@@ -701,7 +698,7 @@ public:
       }
 
       if (rc != 0 && rc != MDB_NOTFOUND) {
-        throw std::runtime_error("error during get_multi");
+        throw std::runtime_error("error during get_multi" + MDBError(rc));
       }
     };
 
@@ -765,12 +762,12 @@ public:
     }
 
     // insert something, with possibly a specific id
-    uint32_t put(const T& value, uint32_t itemId, bool random_ids=false)
+    uint32_t put(const T& value, uint32_t itemId, bool random_ids=false, uint32_t seed=0)
     {
       int flags = 0;
       if(itemId == 0) {
         if(random_ids) {
-          itemId = MDBGetRandomID(*d_txn, d_parent->d_main);
+          itemId = MDBGetRandomID(*d_txn, d_parent->d_main, seed);
         }
         else {
           itemId = MDBGetMaxID(*d_txn, d_parent->d_main) + 1;
@@ -825,7 +822,7 @@ public:
         T value;
         deserializeFromBuffer(data.get<std::string>(), value);
         clearIndex(key.get<uint32_t>(), value);
-        cursor.del();
+        cursor.del(key);
       }
     }
 

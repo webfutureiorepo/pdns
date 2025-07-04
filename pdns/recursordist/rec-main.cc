@@ -594,7 +594,8 @@ void protobufLogResponse(pdns::ProtoZero::RecMessage& message)
   }
 }
 
-void protobufLogResponse(const struct dnsheader* header, LocalStateHolder<LuaConfigItems>& luaconfsLocal,
+void protobufLogResponse(const DNSName& qname, QType qtype,
+                         const struct dnsheader* header, LocalStateHolder<LuaConfigItems>& luaconfsLocal,
                          const RecursorPacketCache::OptPBData& pbData, const struct timeval& tval,
                          bool tcp, const ComboAddress& source, const ComboAddress& destination,
                          const ComboAddress& mappedSource,
@@ -602,6 +603,7 @@ void protobufLogResponse(const struct dnsheader* header, LocalStateHolder<LuaCon
                          const boost::uuids::uuid& uniqueId, const string& requestorId, const string& deviceId,
                          const string& deviceName, const std::map<std::string, RecursorLua4::MetaValue>& meta,
                          const RecEventTrace& eventTrace,
+                         pdns::trace::InitialSpanInfo& otTrace,
                          const std::unordered_set<std::string>& policyTags)
 {
   pdns::ProtoZero::RecMessage pbMessage(pbData ? pbData->d_message : "", pbData ? pbData->d_response : "", 64, 10); // The extra bytes we are going to add
@@ -661,6 +663,10 @@ void protobufLogResponse(const struct dnsheader* header, LocalStateHolder<LuaCon
 #endif
   if (eventTrace.enabled() && (SyncRes::s_event_trace_enabled & SyncRes::event_trace_to_pb) != 0) {
     pbMessage.addEvents(eventTrace);
+  }
+  if (eventTrace.enabled() && (SyncRes::s_event_trace_enabled & SyncRes::event_trace_to_ot) != 0) {
+    auto trace = pdns::trace::TracesData::boilerPlate("rec", qname.toLogString() + '/' + qtype.toString(), eventTrace.convertToOT(otTrace));
+    pbMessage.setOpenTelemetryData(trace.encode());
   }
   pbMessage.addPolicyTags(policyTags);
 
@@ -1517,8 +1523,13 @@ void parseACLs()
   l_initialized = true;
 }
 
+static std::mutex pipeBroadCastMutex{};
+
 void broadcastFunction(const pipefunc_t& func)
 {
+  // we do not want the handler and web code to use pipes simultaneously
+  std::lock_guard lock(pipeBroadCastMutex);
+
   /* This function might be called by the worker with t_id not inited during startup
      for the initialization of ACLs and domain maps. After that it should only
      be called by the handler. */
@@ -1596,11 +1607,10 @@ static RemoteLoggerStats_t& operator+=(RemoteLoggerStats_t& lhs, const RemoteLog
   return lhs;
 }
 
-// This function should only be called by the handler to gather
-// metrics, wipe the cache, reload the Lua script (not the Lua config)
-// or change the current trace regex, and by the SNMP thread to gather
-// metrics.
-// Note that this currently skips the handler, but includes the taskThread(s).
+// This function should only be called by the handler and web thread to gather metrics, wipe the
+// cache, reload the Lua script (not the Lua config) or change the current trace regex, and by the
+// SNMP thread to gather metrics.  Note that this currently skips the handler, but includes the
+// taskThread(s).
 template <class T>
 T broadcastAccFunction(const std::function<T*()>& func)
 {
@@ -1608,6 +1618,9 @@ T broadcastAccFunction(const std::function<T*()>& func)
     g_slog->withName("runtime")->info(Logr::Critical, "broadcastAccFunction has been called by a worker"); // tid will be added
     _exit(1);
   }
+
+  // we do not want the handler and web code to use pipes simultaneously
+  std::lock_guard lock(pipeBroadCastMutex);
 
   unsigned int thread = 0;
   T ret = T();
@@ -1712,11 +1725,13 @@ static int initDNSSEC(Logr::log_t log)
     return 1;
   }
 
-  g_signatureInceptionSkew = ::arg().asNum("signature-inception-skew");
-  if (g_signatureInceptionSkew < 0) {
-    SLOG(g_log << Logger::Error << "A negative value for 'signature-inception-skew' is not allowed" << endl,
-         log->info(Logr::Error, "A negative value for 'signature-inception-skew' is not allowed"));
-    return 1;
+  {
+    auto value = ::arg().asNum("signature-inception-skew");
+    if (value < 0) {
+      log->info(Logr::Error, "A negative value for 'signature-inception-skew' is not allowed");
+      return 1;
+    }
+    g_signatureInceptionSkew = value;
   }
 
   g_dnssecLogBogus = ::arg().mustDo("dnssec-log-bogus");

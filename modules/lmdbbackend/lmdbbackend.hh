@@ -160,7 +160,7 @@ public:
 
   bool getBeforeAndAfterNames(domainid_t domainId, const ZoneName& zonename, const DNSName& qname, DNSName& before, DNSName& after) override;
 
-  bool updateDNSSECOrderNameAndAuth(domainid_t domain_id, const DNSName& qname, const DNSName& ordername, bool auth, const uint16_t qtype = QType::ANY) override;
+  bool updateDNSSECOrderNameAndAuth(domainid_t domain_id, const DNSName& qname, const DNSName& ordername, bool auth, const uint16_t qtype, bool isNsec3) override;
 
   bool updateEmptyNonTerminals(domainid_t domain_id, set<DNSName>& insert, set<DNSName>& erase, bool remove) override;
 
@@ -326,17 +326,25 @@ private:
   shared_ptr<RecordsROTransaction> d_rotxn; // for lookup and list
   shared_ptr<RecordsRWTransaction> d_rwtxn; // for feedrecord within begin/aborttransaction
   bool d_txnorder{false}; // whether d_rotxn is more recent than d_rwtxn
-  void openAllTheDatabases(uint64_t mapSize);
+  void openAllTheDatabases();
   std::shared_ptr<RecordsRWTransaction> getRecordsRWTransaction(domainid_t id);
   std::shared_ptr<RecordsROTransaction> getRecordsROTransaction(domainid_t id, const std::shared_ptr<LMDBBackend::RecordsRWTransaction>& rwtxn = nullptr);
   int genChangeDomain(const ZoneName& domain, const std::function<void(DomainInfo&)>& func);
   int genChangeDomain(domainid_t id, const std::function<void(DomainInfo&)>& func);
-  static void deleteDomainRecords(RecordsRWTransaction& txn, domainid_t domain_id, uint16_t qtype = QType::ANY);
+  static void deleteDomainRecords(RecordsRWTransaction& txn, uint16_t qtype, const std::string& match);
 
   void getAllDomainsFiltered(vector<DomainInfo>* domains, const std::function<bool(DomainInfo&)>& allow);
 
   void lookupInternal(const QType& type, const DNSName& qdomain, domainid_t zoneId, DNSPacket* p, bool include_disabled);
   bool getSerial(DomainInfo& di);
+
+  static bool getAfterForward(MDBROCursor& cursor, MDBOutVal& key, MDBOutVal& val, domainid_t id, DNSName& after);
+  static bool getAfterForwardFromStart(MDBROCursor& cursor, MDBOutVal& key, MDBOutVal& val, domainid_t id, DNSName& after);
+  static bool isNSEC3BackRecord(LMDBResourceRecord& lrr, const MDBOutVal& key, const MDBOutVal& val);
+  static bool isValidAuthRecord(const MDBOutVal& key, const MDBOutVal& val);
+  static bool hasOrphanedNSEC3Record(MDBRWCursor& cursor, domainid_t domain_id, const DNSName& qname);
+  static void deleteNSEC3RecordPair(const std::shared_ptr<RecordsRWTransaction>& txn, domainid_t domain_id, const DNSName& qname);
+  void writeNSEC3RecordPair(const std::shared_ptr<RecordsRWTransaction>& txn, domainid_t domain_id, const DNSName& qname, const DNSName& ordername);
 
   bool get_list(DNSZoneRecord& rr);
   bool get_lookup(DNSZoneRecord& rr);
@@ -356,4 +364,5 @@ private:
   bool d_handle_dups;
   bool d_views;
   DTime d_dtime; // used only for logging
+  uint64_t d_mapsize;
 };

@@ -135,6 +135,7 @@ common_sources += files(
   src_dir / 'negcache.cc',
   src_dir / 'nsecrecords.cc',
   src_dir / 'protozero.cc',
+  src_dir / 'protozero-trace.cc',
   src_dir / 'proxy-protocol.cc',
   src_dir / 'pubsuffixloader.cc',
   src_dir / 'qtype.cc',
@@ -285,6 +286,9 @@ metric_sources = [
 
 py = import('python')
 python = py.find_installation('python3', required: true)
+if python.language_version().version_compare('<3.8')
+   error('Python version is ' + python.language_version() + '; should be at least 3.8 for generate.py script')
+endif
 
 metricfiles = custom_target(
   command: [python, '@INPUT0@', '@SOURCE_ROOT@', '@BUILD_ROOT@'],
@@ -349,22 +353,20 @@ librec_signers_openssl = declare_dependency(
   )
 )
 
-# If we have pubsuffix.cc in the source tree, use it. Otherwise download and build it.
-pubsuffix_dl_source =  'effective_tld_names.dat'
-pubsuffix_cc = src_dir / 'pubsuffix.cc'
-if not fs.is_file(pubsuffix_cc)
-  curl_command = find_program('curl', required: true)
-  pubsuffix_dl_source = custom_target(
-    'pubsuffix-dl',
-    command: [curl_command, '-s', '-S', '-o', '@OUTPUT@', 'https://publicsuffix.org/list/public_suffix_list.dat'],
-    output: pubsuffix_dl_source
+# If we have pubsuffix.cc in the source tree, use it. Otherwise download data and build it in the build dir.
+if fs.is_file(src_dir / 'pubsuffix.cc')
+  cp_command = find_program('cp')
+  pubsuffix_cc = custom_target(
+    'cp-pubsuffix',
+    command: [cp_command, '-pv', '@INPUT@', '@OUTPUT@'],
+    input: src_dir / 'pubsuffix.cc',
+    output: 'pubsuffix.cc',
   )
-
+else
   mkpubsuffix_command = find_program('mkpubsuffixcc', required: true)
   pubsuffix_cc = custom_target(
     'pubsuffix-cc',
-    command: [mkpubsuffix_command, '@INPUT@', '@OUTPUT@'],
-    input: pubsuffix_dl_source,
+    command: [mkpubsuffix_command, '@OUTPUT@'],
     output: 'pubsuffix.cc',
   )
 endif
@@ -491,6 +493,7 @@ test_sources += files(
       src_dir / 'test-mtasker.cc',
       src_dir / 'test-negcache_cc.cc',
       src_dir / 'test-packetcache_hh.cc',
+      src_dir / 'test-protozero-trace.cc',
       src_dir / 'test-rcpgenerator_cc.cc',
       src_dir / 'test-rec-system-resolve.cc',
       src_dir / 'test-rec-taskqueue.cc',
@@ -534,6 +537,7 @@ if get_option('unit-tests')
           dep_boost_test,
           dep_lua,
           dep_nod,
+          dep_protozero,
           dep_recrust,
           dep_rust_recrust,
           librec_signers_openssl,
@@ -593,7 +597,8 @@ foreach tool, info: tools
 endforeach
 
 if get_option('unit-tests')
-  test('testrunner', testrunner)
+  # default timeout of 30s is too short for some ubicloud targets. Unknown *why* they are so slow.
+  test('testrunner', testrunner, timeout: 120)
 endif
 
 # Man-pages.

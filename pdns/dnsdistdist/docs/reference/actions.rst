@@ -555,7 +555,7 @@ The following actions exist.
 
   Set the ECS prefix and prefix length sent to backends to an arbitrary value.
   If both IPv4 and IPv6 masks are supplied the IPv4 one will be used for IPv4 clients
-  and the IPv6 one for IPv6 clients. Otherwise the first mask is used for both, and
+  and the IPv6 one for IPv6 clients. Otherwise, the first mask is used for both, and
   can actually be an IPv6 mask.
   Subsequent rules are processed after this action.
 
@@ -588,6 +588,16 @@ The following actions exist.
   .. versionadded:: 1.7.0
 
   Add arbitrary EDNS option and data to the query. Any existing EDNS content with the same option code will be overwritten.
+  Subsequent rules are processed after this action.
+
+  :param int option: The EDNS option number
+  :param string data: The EDNS0 option raw content
+
+.. function:: SetEDNSOptionResponseAction(option)
+
+  .. versionadded:: 1.9.11
+
+  Add arbitrary EDNS option and data to the response. Any existing EDNS content with the same option code will be replaced.
   Subsequent rules are processed after this action.
 
   :param int option: The EDNS option number

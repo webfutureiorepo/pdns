@@ -575,7 +575,7 @@ The following excerpt from the DNSBackend shows the relevant functions:
 
 The mentioned DomainInfo struct looks like this:
 
-.. cpp:struct:: DomainInfo
+.. cpp:class:: DomainInfo
 
 .. cpp:member:: domainid_t DomainInfo::id
 
@@ -632,7 +632,7 @@ this zone.
 
   This is like ``getUnfreshSecondaryInfos``, but for a specific domain. If the
   backend considers itself authoritative for the named zone, ``di`` should
-  be filled out, and 'true' be returned. Otherwise return false.
+  be filled out, and 'true' be returned. Otherwise, return false.
 
 .. cpp:function:: bool DomainInfo::startTransaction(const string &qname, domainid_t id)
 
@@ -893,7 +893,7 @@ In order for a backend to support DNSSEC, quite a few number of additional opera
       virtual bool getBeforeAndAfterNamesAbsolute(domainid_t id, const DNSName& qname, DNSName& unhashed, DNSName& before, DNSName& after);
 
       /* update operations */
-      virtual bool updateDNSSECOrderNameAndAuth(domainid_t domain_id, const DNSName& qname, const DNSName& ordername, bool auth, const uint16_t qtype=QType::ANY);
+      virtual bool updateDNSSECOrderNameAndAuth(domainid_t domain_id, const DNSName& qname, const DNSName& ordername, bool auth, const uint16_t qtype, bool isNsec3);
       virtual bool updateEmptyNonTerminals(domainid_t domain_id, set<DNSName>& insert, set<DNSName>& erase, bool remove);
       virtual bool feedEnts(domainid_t domain_id, map<DNSName,bool> &nonterm);
       virtual bool feedEnts3(domainid_t domain_id, const DNSName &domain, map<DNSName,bool> &nonterm, const NSEC3PARAMRecordContent& ns3prc, bool narrow);
@@ -918,13 +918,13 @@ contain `CAP_DNSSEC` if that backend supports DNSSEC.
   Asks the names before and after qname for NSEC and NSEC3. The qname will be hashed when using NSEC3. Care must be taken to handle wrap-around when qname is the first or last in the ordered list of zone names.
   Please note that in case the requested name is present in the zone, it should be returned as the "before" name.
 
-.. cpp:function:: virtual bool updateDNSSECOrderNameAndAuth(domainid_t domain_id, const DNSName& qname, const DNSName& ordername, bool auth, const uint16_t qtype=QType::ANY)
+.. cpp:function:: virtual bool updateDNSSECOrderNameAndAuth(domainid_t domain_id, const DNSName& qname, const DNSName& ordername, bool auth, const uint16_t qtype, bool isNsec3)
 
   Updates the ordername and auth fields.
 
 .. cpp:function:: virtual bool updateEmptyNonTerminals(domainid_t domain_id, set<DNSName>& insert, set<DNSName>& erase, bool remove)
 
-  Updates ENT after a zone has been rectified. If 'remove' is false, 'erase' contains a list of ENTs to remove from the zone before adding any. Otherwise all ENTs should be removed from the zone before adding any. 'insert' contains the list of ENTs to add to the zone after the removals have been done.
+  Updates ENT after a zone has been rectified. If 'remove' is false, 'erase' contains a list of ENTs to remove from the zone before adding any. Otherwise, all ENTs should be removed from the zone before adding any. 'insert' contains the list of ENTs to add to the zone after the removals have been done.
 
 .. cpp:function:: virtual bool feedEnts(domainid_t domain_id, map<DNSName,bool> &nonterm)
 

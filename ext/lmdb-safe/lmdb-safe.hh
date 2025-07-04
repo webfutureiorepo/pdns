@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <lmdb.h>
-#include <map>
+#include <unordered_map>
 #include <thread>
 #include <memory>
 #include <string>
@@ -13,6 +13,7 @@
 #include <mutex>
 #include <vector>
 #include <algorithm>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <atomic>
@@ -32,6 +33,11 @@ using std::string;
 #else
 #define StringView string
 #endif
+
+static inline string MDBError(int ret)
+{
+  return mdb_strerror(ret);
+}
 
 /* open issues:
  *
@@ -109,12 +115,12 @@ public:
   void decROTX();
 private:
   std::mutex d_openmut;
-  std::mutex d_countmutex;
-  std::map<std::thread::id, int> d_RWtransactionsOut;
-  std::map<std::thread::id, int> d_ROtransactionsOut;
+  std::shared_mutex d_countmutex;
+  std::unordered_map<std::thread::id, std::atomic<int>> d_RWtransactionsOut;
+  std::unordered_map<std::thread::id, std::atomic<int>> d_ROtransactionsOut;
 };
 
-std::shared_ptr<MDBEnv> getMDBEnv(const char* fname, int flags, int mode, uint64_t mapsizeMB=(sizeof(void *)==4) ? 100 : 16000);
+std::shared_ptr<MDBEnv> getMDBEnv(const char* fname, int flags, int mode, uint64_t mapsizeMB);
 
 #ifndef DNSDIST
 
@@ -123,7 +129,9 @@ struct MDBOutVal; // forward declaration because of how the functions below tie 
 namespace LMDBLS {
   class __attribute__((__packed__)) LSheader {
   private:
-    static auto bswap64(uint64_t value) -> uint64_t
+    // Some systems #define bswap64 to __builtin_bswap64, and the body below would cause infinite
+    // recursion if we would name the function bswap64
+    static auto pdns_bswap64(uint64_t value) -> uint64_t
     {
 #if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || !defined(__ORDER_BIG_ENDIAN__)
 #error "your compiler does not define byte order macros"
@@ -147,8 +155,8 @@ namespace LMDBLS {
 
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     LSheader(uint64_t timestamp, uint64_t txnid, uint8_t flags = 0, uint8_t version = 0, uint8_t numextra = 0) :
-      d_timestamp(bswap64(timestamp)),
-      d_txnid(bswap64(txnid)),
+      d_timestamp(pdns_bswap64(timestamp)),
+      d_txnid(pdns_bswap64(txnid)),
       d_version(version),
       d_flags(flags),
       d_numextra(htons(numextra))
@@ -160,7 +168,7 @@ namespace LMDBLS {
     }
 
     [[nodiscard]] uint64_t getTimestamp() const {
-      return bswap64(d_timestamp);
+      return pdns_bswap64(d_timestamp);
     }
   };
 
@@ -403,8 +411,8 @@ public:
     int rc = mdb_get(d_txn, dbi, const_cast<MDB_val*>(&key.d_mdbval),
                      const_cast<MDB_val*>(&val.d_mdbval));
 
-    if(rc && rc != MDB_NOTFOUND) {
-      throw std::runtime_error("getting data: " + std::string(mdb_strerror(rc)));
+    if(rc != 0 && rc != MDB_NOTFOUND) {
+      throw std::runtime_error("getting data: " + MDBError(rc));
     }
 
 #ifndef DNSDIST
@@ -605,8 +613,8 @@ private:
       }
 
       rc = mdb_cursor_get(d_cursor, &key.d_mdbval, &data.d_mdbval, op);
-      if(rc && rc != MDB_NOTFOUND) {
-         throw std::runtime_error("Unable to get from cursor: " + std::string(mdb_strerror(rc)));
+      if(rc != 0 && rc != MDB_NOTFOUND) {
+         throw std::runtime_error("Unable to get from cursor: " + MDBError(rc));
       }
 
       if (rc == MDB_NOTFOUND) {
@@ -632,8 +640,9 @@ public:
   {
     d_prefix.clear();
     int rc = mdb_cursor_get(d_cursor, &key.d_mdbval, &data.d_mdbval, op);
-    if(rc && rc != MDB_NOTFOUND)
-       throw std::runtime_error("Unable to get from cursor: " + std::string(mdb_strerror(rc)));
+    if(rc != 0 && rc != MDB_NOTFOUND) {
+       throw std::runtime_error("Unable to get from cursor: " + MDBError(rc));
+    }
     return skipDeleted(key, data, op, rc);
   }
 
@@ -642,8 +651,9 @@ public:
     d_prefix.clear();
     key.d_mdbval = in.d_mdbval;
     int rc=mdb_cursor_get(d_cursor, const_cast<MDB_val*>(&key.d_mdbval), &data.d_mdbval, MDB_SET);
-    if(rc && rc != MDB_NOTFOUND)
-       throw std::runtime_error("Unable to find from cursor: " + std::string(mdb_strerror(rc)));
+    if(rc != 0 && rc != MDB_NOTFOUND) {
+       throw std::runtime_error("Unable to find from cursor: " + MDBError(rc));
+    }
     return skipDeleted(key, data, MDB_SET, rc);
   }
 
@@ -664,8 +674,9 @@ public:
     key.d_mdbval = in.d_mdbval;
 
     int rc = mdb_cursor_get(d_cursor, const_cast<MDB_val*>(&key.d_mdbval), &data.d_mdbval, MDB_SET_RANGE);
-    if(rc && rc != MDB_NOTFOUND)
-       throw std::runtime_error("Unable to lower_bound from cursor: " + std::string(mdb_strerror(rc)));
+    if(rc != 0 && rc != MDB_NOTFOUND) {
+       throw std::runtime_error("Unable to lower_bound from cursor: " + MDBError(rc));
+    }
     return skipDeleted(key, data, MDB_SET_RANGE, rc);
   }
 
@@ -673,8 +684,9 @@ public:
   int nextprev(MDBOutVal& key, MDBOutVal& data, MDB_cursor_op op)
   {
     int rc = mdb_cursor_get(d_cursor, const_cast<MDB_val*>(&key.d_mdbval), &data.d_mdbval, op);
-    if(rc && rc != MDB_NOTFOUND)
-       throw std::runtime_error("Unable to prevnext from cursor: " + std::string(mdb_strerror(rc)));
+    if(rc != 0 && rc != MDB_NOTFOUND) {
+       throw std::runtime_error("Unable to prevnext from cursor: " + MDBError(rc));
+    }
     return skipDeleted(key, data, op, rc);
   }
 
@@ -691,8 +703,9 @@ public:
   int currentlast(MDBOutVal& key, MDBOutVal& data, MDB_cursor_op op)
   {
     int rc = mdb_cursor_get(d_cursor, const_cast<MDB_val*>(&key.d_mdbval), &data.d_mdbval, op);
-    if(rc && rc != MDB_NOTFOUND)
-       throw std::runtime_error("Unable to next from cursor: " + std::string(mdb_strerror(rc)));
+    if(rc != 0 && rc != MDB_NOTFOUND) {
+       throw std::runtime_error("Unable to next from cursor: " + MDBError(rc));
+    }
     return skipDeleted(key, data, op, rc);
   }
 
@@ -808,7 +821,7 @@ public:
                            const_cast<MDB_val*>(&key.d_mdbval),
                            const_cast<MDB_val*>(&pval.d_mdbval), flags);
     if (mdbPutRc != 0) {
-      throw std::runtime_error("putting data: " + std::string(mdb_strerror(mdbPutRc)));
+      throw std::runtime_error("putting data: " + MDBError(mdbPutRc));
     }
   }
 #else
@@ -819,43 +832,42 @@ public:
     int rc;
     if ((rc = mdb_put(d_txn, dbi,
                       const_cast<MDB_val*>(&key.d_mdbval),
-                      const_cast<MDB_val*>(&val.d_mdbval), flags)))
-      throw std::runtime_error("putting data: " + std::string(mdb_strerror(rc)));
+                      const_cast<MDB_val*>(&val.d_mdbval), flags))) {
+      throw std::runtime_error("putting data: " + MDBError(rc));
+    }
   }
 #endif
 
-  int del(MDBDbi& dbi, const MDBInVal& key)
+  void del(MDBDbi& dbi, const MDBInVal& key)
   {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
-    int mdbDelRc = mdb_del(d_txn, dbi, (MDB_val*)&key.d_mdbval, nullptr);
-    if ((mdbDelRc != 0) && mdbDelRc != MDB_NOTFOUND) {
-      throw std::runtime_error("deleting data: " + std::string(mdb_strerror(mdbDelRc)));
-    }
 #ifndef DNSDIST
-    if (mdbDelRc != MDB_NOTFOUND && LMDBLS::s_flag_deleted) {
-      // if it did exist, we need to mark it as deleted now
-
+    if (LMDBLS::s_flag_deleted) {
+      // Regardless of whether or not it did exist, we need to mark it
+      // as deleted now.
       size_t txid = mdb_txn_id(d_txn);
       if (d_txtime == 0) {
         throw std::runtime_error("got zero txtime");
       }
 
       std::string ins =
-        // std::string((const char*)&txid, sizeof(txid)) +
         LMDBLS::LSheader(d_txtime, txid, LMDBLS::LS_FLAG_DELETED).toString();
-
       MDBInVal pval = ins;
 
-      mdbDelRc = mdb_put(d_txn, dbi,
-                         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-                         const_cast<MDB_val*>(&key.d_mdbval),
-                         const_cast<MDB_val*>(&pval.d_mdbval), 0);
-      if (mdbDelRc != 0) {
-        throw std::runtime_error("marking data deleted: " + std::string(mdb_strerror(mdbDelRc)));
+      int mdbPutRc = mdb_put(d_txn, dbi,
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        const_cast<MDB_val*>(&key.d_mdbval),
+        const_cast<MDB_val*>(&pval.d_mdbval), 0);
+      if (mdbPutRc != 0) {
+        throw std::runtime_error("marking data deleted: " + MDBError(mdbPutRc));
       }
+      return;
     }
 #endif
-    return mdbDelRc;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
+    int mdbDelRc = mdb_del(d_txn, dbi, (MDB_val*)&key.d_mdbval, nullptr);
+    if (mdbDelRc != 0 && mdbDelRc != MDB_NOTFOUND) {
+      throw std::runtime_error("deleting data: " + MDBError(mdbDelRc));
+    }
   }
 
   int get(MDBDbi& dbi, const MDBInVal& key, MDBOutVal& val)
@@ -868,8 +880,8 @@ public:
                            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
                            const_cast<MDB_val*>(&key.d_mdbval),
                            const_cast<MDB_val*>(&val.d_mdbval));
-    if ((mdbGetRc != 0) && mdbGetRc != MDB_NOTFOUND) {
-      throw std::runtime_error("getting data: " + std::string(mdb_strerror(mdbGetRc)));
+    if (mdbGetRc != 0 && mdbGetRc != MDB_NOTFOUND) {
+      throw std::runtime_error("getting data: " + MDBError(mdbGetRc));
     }
 
 #ifndef DNSDIST
@@ -927,8 +939,9 @@ public:
     int rc = mdb_cursor_put(*this,
                             const_cast<MDB_val*>(&key.d_mdbval),
                             const_cast<MDB_val*>(&pval.d_mdbval), MDB_CURRENT);
-    if(rc)
-      throw std::runtime_error("mdb_cursor_put: " + std::string(mdb_strerror(rc)));
+    if(rc != 0) {
+      throw std::runtime_error("mdb_cursor_put: " + MDBError(rc));
+    }
   }
 #else
   void put(const MDBOutVal& key, const MDBInVal& data)
@@ -936,23 +949,16 @@ public:
     int rc = mdb_cursor_put(*this,
                             const_cast<MDB_val*>(&key.d_mdbval),
                             const_cast<MDB_val*>(&data.d_mdbval), MDB_CURRENT);
-    if(rc)
-      throw std::runtime_error("mdb_cursor_put: " + std::string(mdb_strerror(rc)));
+    if(rc != 0) {
+      throw std::runtime_error("mdb_cursor_put: " + MDBError(rc));
+    }
   }
 #endif
 
 #ifndef DNSDIST
-  int del(int flags=0)
+  void del(const MDBInVal& key)
   {
-    MDBOutVal key, val;
-
     if (LMDBLS::s_flag_deleted) {
-      int rc_get = mdb_cursor_get (*this, &key.d_mdbval, &val.d_mdbval, MDB_GET_CURRENT);
-
-      if(rc_get) {
-              throw std::runtime_error("getting key to mark data as deleted: " + std::string(mdb_strerror(rc_get)));
-      }
-
       size_t txid = mdb_txn_id(d_txn);
       if (d_txtime == 0) { throw std::runtime_error("got zero txtime"); }
 
@@ -966,15 +972,16 @@ public:
 
       int rc_put = mdb_cursor_put(*this,
                      const_cast<MDB_val*>(&pkey.d_mdbval),
-                     const_cast<MDB_val*>(&pval.d_mdbval), 0 /* MDB_CURRENT */);
+                     const_cast<MDB_val*>(&pval.d_mdbval), 0);
       if(rc_put) {
-              throw std::runtime_error("marking data deleted: " + std::string(mdb_strerror(rc_put)));
+        throw std::runtime_error("marking data deleted: " + MDBError(rc_put));
       }
-      return rc_put;
     }
     else {
       // do a normal delete
-      return mdb_cursor_del(*this, flags);
+      if (int rc_del = mdb_cursor_del(*this, 0); rc_del != 0) {
+        throw std::runtime_error("deleting data: " + MDBError(rc_del));
+      }
     }
   }
 #endif

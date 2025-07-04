@@ -26,6 +26,12 @@ Specifically, catalog zones have not been updated for views support at all.
 DNS Update (RFC2136) support has not been well tested with views.
 Most other things are expected to work; if you find something wrong, please :ref:`let us know <getting-support>`.
 
+LOC record parsing
+^^^^^^^^^^^^^^^^^^
+
+The parsing and validation of LOC records is modified to be conforming to the `rfc:1876`.
+This may cause records previously rejected to be accepted and vice versa.
+
 LUA records whitespace insertion
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -49,13 +55,17 @@ If you want to listen on both IPv4 and IPv6, you need to add a line with ``0.0.0
 pdnsutil behaviour changes
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A few changes of behaviour have been implemented in :doc:`pdnsutil <pdnsutil>`.
+A few changes of behaviour have been implemented in :doc:`pdnsutil <manpages/pdnsutil.1>`.
 
 * The ``add-zone-key`` command used to default to creating a ZSK,
   if no key type was given. This default has changed to KSK.
 * The ``add-record``, ``delete-rrset``, ``edit-zone``, ``increase-serial`` and
   ``replace-rrset`` operations will now refuse to work on secondary zones unless
   the ``--force`` option is passed.
+* When a zone gets created with either ``create-zone``,
+  ``create-secondary-zone`` or ``load-zone`` (if the zone wasn't existing
+  already), a :ref:`metadata-soa-edit-api` metadata with a value of ``DEFAULT``
+  will be added to the zone.
 
 4.8.0 to 4.9.0
 --------------

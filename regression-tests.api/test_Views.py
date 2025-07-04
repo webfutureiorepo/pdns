@@ -30,7 +30,7 @@ class Networks(ApiTestCase):
         r = self.get_network('192.0.2.0/24')
         print(r.content)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()['networks'][0], dict(network='192.0.2.0/24', view='view1'))  # FIXME: should this really be wrapped inside `networks:`?
+        self.assertEqual(r.json(), dict(network='192.0.2.0/24', view='view1'))
 
         # empty view name is equivalent to delete
         r = self.set_network('192.0.2.0/24', view='')
@@ -119,6 +119,14 @@ class Views(ApiTestCase, AuthZonesHelperMixin):
         r = self.get_view('view1')
         print(r.content)
         self.assertEqual(r.status_code, 404)
+
+    def test_zonelist_variant(self):
+        r = self.session.get(
+            self.url("/api/v1/servers/localhost/zones"),
+            headers={'content-type': 'application/json'})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("example.com..spiceoflife", [obj["name"] for obj in r.json()])
 
     def test_views_novariant(self):
         return self._test_views()

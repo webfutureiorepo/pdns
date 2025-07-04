@@ -71,7 +71,7 @@ Merging multiple setting files
 ------------------------------
 If `recursor.include_dir`_ is set, all ``.yml`` files in it will be processed in alphabetical order, modifying the  settings processed so far.
 
-For simple values like an boolean or number setting, a value in the processed file will overwrite an existing setting.
+For simple values like a boolean or number setting, a value in the processed file will overwrite an existing setting.
 
 For values of type sequence, the new value will *replace* the existing value if the existing value is equal to the ``default`` or if the new value is marked with the ``!override`` tag.
 Otherwise, the existing value will be *extended* with the new value by appending the new sequence to the existing.
@@ -119,7 +119,7 @@ After processing ``extra.yml`` the value will be set to the empty sequence, as e
            forwarders:
            - '::2'
 
-   The result will *not* be a a single forward with two IP addresses, but two entries for ``example.net``.
+   The result will *not* be a single forward with two IP addresses, but two entries for ``example.net``.
    It depends on the specific setting how the sequence is processed and interpreted further.
 
 Description of YAML syntax for structured types
@@ -274,6 +274,8 @@ As of version 5.1.0, a protobuf server is defined as
     exportTypes: [A, AAAA, CNAME] Sequence of QType names
     logMappedFrom: false
 
+.. versionchanged:: 5.3.0 The aliases ``max_queued_entries``, ``reconnect_wait_time``, ``tagged_only``, ``async_connect``, ``log_queries``, ``log_responses``, ``export_types``, ``log_mapped_from`` have been introduced.
+    
 An example of a ``protobuf_servers`` entry, which is a sequence of `ProtobufServer`_:
 
 .. code-block:: yaml
@@ -303,6 +305,8 @@ As of version 5.1.0, a dnstap framestream server is defined as
   queueNotifyThreshold: 0
   reopenInterval: 0
 
+.. versionchanged:: 5.3.0 The aliases ``log_queries``, ``log_responses``, ``buffer_hint``, ``flush_timeout``, ``input_queue_size``, ``output_queue_size``, ``queue_notify_threshold``, ``reopen_interval`` have been introduced.
+
 An example of a ``dnstap_framestream_servers`` entry, which is a sequence of `DNSTapFrameStreamServers`_:
 
 .. code-block:: yaml
@@ -328,6 +332,8 @@ As of version 5.1.0, an NOD dnstap framestream server is defined as
   outputQueueSize: 0
   queueNotifyThreshold: 0
   reopenInterval: 0
+
+.. versionchanged:: 5.3.0 The aliases ``log_nods``, ``log_udrs``, ``buffer_hint``, ``flush_timeout``, ``input_queue_size``, ``output_queue_size``, ``queue_notify_threshold``, ``reopen_interval`` have been introduced.
 
 An example of a ``dnstap_nod_framestream_servers`` entry, which is a sequence of `DNSTapNODFrameStreamServers`_:
 
@@ -399,10 +405,11 @@ As of version 5.1.0, an RPZ entry is defined as
     dumpFile: string
     seedFile: string
 
-If ``addresses`` is empty, the ``name`` field specifies the path name of the RPZ, otherwise the ``name`` field defines the name of the RPZ.
-Starting with version 5.2.0, names instead of IP addresess can be used for ``addresses`` if
-:ref:`setting-yaml-recursor.system_resolver_ttl` is set.
+.. versionchanged:: 5.3.0 The aliases ``defpol_override_local_data``, ``extended_error_code``, ``extended_error_extra``, ``include_soa``, ``ignore_duplicates``, ``policy_name``, ``overriddes_gettag``, ``zone_size_hint``, ``max_received_bytes``, ``local_address``, ``axfr_timeout``, ``dump_file``, ``seed_file`` have been introduced.
 
+If ``addresses`` is empty, the ``name`` field specifies the path name of the RPZ; otherwise, the ``name`` field defines the name of the RPZ.
+Starting with version 5.2.0, names instead of IP addresses can be used for ``addresses`` if
+:ref:`setting-yaml-recursor.system_resolver_ttl` is set.
 
 An example of an ``rpzs`` entry, which is a sequence of `RPZ`_:
 
@@ -431,16 +438,18 @@ As of version 5.1.0, a ZoneToCache entry is defined as
      secret: Base64 encoded secret
    refreshPeriod: 86400
    retryOnErrorPeriod: 60
-   maxReceivedMBytes: 0 Zero mean no restrcition
+   maxReceivedMBytes: 0 Zero mean no restriction
    localAddress: local IP address to  bind to.
    zonemd: One of ignore, validate, require
    dnssec: One of ignore, validate, require
+
+.. versionchanged:: 5.3.0 The aliases ``refresh_period``, ``retry_on_error``, ``max_received_mbytes``, ``local_address`` has been introduced.
 
 An example of an ``zonetocaches`` entry, which is a sequence of `ZoneToCache`_:
 
 .. code-block:: yaml
 
-   recursor:
+   recordcache:
      zonetocaches:
        - zone: .
          method: url
@@ -520,10 +529,12 @@ As of version 5.2.0, a forwarding catalog zone entry is defined as:
        recurse: bool, default false
        notify_allowed: bool, default false
 
+.. versionchanged:: 5.3.0 The aliases ``zone_size_hint``, ``max_received_bytes``, ``local_address``, ``axfr_timeout`` have been introduced.
+
 While this setting has no equivalent old-style Lua configuration, it cannot appear together with :ref:`setting-lua-config-file` being set.
 If you want to use catalog zones to define forwards, you need to convert existing Lua configuration to YAML format.
 
-Names instead of IP addresess can be used for ``addresses`` if :ref:`setting-yaml-recursor.system_resolver_ttl` is set.
+Names instead of IP addresses can be used for ``addresses`` if :ref:`setting-yaml-recursor.system_resolver_ttl` is set.
 An example of a :ref:`setting-yaml-recursor.forwarding_catalog_zones` entry, which is a sequence of `ForwardingCatalogZone`_:
 
 .. code-block:: yaml
@@ -550,6 +561,8 @@ The forwarding parameters will be taken from the default group entry (the one wi
 For catalog zone members in a group, the forwarding parameters will be taken from the group entry with the corresponding name.
 
 The forwarding definitions will be written into a file ``$api_dir/catzone.$zonename``. :ref:`setting-yaml-webservice.api_dir` must be defined, the directory must exist and be writable by the :program:`Recursor` process.
+
+.. _incoming-ws-config:
 
 IncomingWSConfig
 ^^^^^^^^^^^^^^^^

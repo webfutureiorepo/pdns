@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Load settings definitions and generates the corresponding documentation."""
 import os
+from pathlib import Path
 import sys
 import tempfile
 import yaml
@@ -126,7 +127,7 @@ def get_temporary_file_for_generated_content(directory):
     generated_fp.write('.. THIS IS A GENERATED FILE. DO NOT EDIT. See dnsdist-settings-documentation-generator.py\n\n')
     return generated_fp
 
-def process_settings():
+def process_settings(def_file):
     output = '''.. raw:: latex
 
     \\setcounter{secnumdepth}{-1}
@@ -136,17 +137,18 @@ YAML configuration reference
 
 Since 2.0.0, :program:`dnsdist` supports the YAML configuration format in addition to the existing Lua one.
 
-If the configuration file passed to :program:`dnsdist` via the ``-C`` command-line switch ends in ``.yml``, it is assumed to be in the new YAML format, and an attempt to load a Lua configuration file with the same name but the ``.lua`` will be done before loading the YAML configuration. If the names ends in ``.lua``, there will also be an attempt to find a file with the same name but ending in ``.yml``. Otherwise the existing Lua configuration format is assumed.
+If the configuration file passed to :program:`dnsdist` via the ``-C`` command-line switch ends in ``.yml``, it is assumed to be in the new YAML format, and an attempt to load a Lua configuration file with the same name but the ``.lua`` will be done before loading the YAML configuration. If the names ends in ``.lua``, there will also be an attempt to find a file with the same name but ending in ``.yml``. Otherwise, the existing Lua configuration format is assumed.
 
 By default, when a YAML configuration file is used, any Lua configuration file used along the YAML configuration should only contain functions, and ideally even those should be defined either inline in the YAML file or in separate files included from the YAML configuration, for clarity. It is however possible to change this behaviour using the :func:`enableLuaConfiguration` directive to enable Lua configuration directives, but it is strongly advised not to use this directive unless absolutely necessary, and to prefer doing all the configuration in either Lua or YAML but to not mix them.
 Note that Lua directives that can be used at runtime are always available via the :doc:`../guides/console`, regardless of whether they are enabled during configuration.
 
+It is possible to access objects declared in the YAML configuration from the console via :func:`getObjectFromYAMLConfiguration`.
+
 A YAML configuration file contains several sections, that are described below.
 
-.. code-block:: yaml\n
 '''
 
-    objects = get_objects('../dnsdist-settings-definitions.yml')
+    objects = get_objects(def_file)
     for object_name, entries in sorted(objects.items()):
         if object_name == 'GlobalConfiguration':
             output += process_object(object_name, entries, 'settings', True)
@@ -185,29 +187,37 @@ def process_selectors_or_actions(def_file, entry_type):
     return output
 
 def main():
-    if not os.path.isdir('../docs'):
-        print('Skipping settings documentation generation because the ../docs/ folder does not exist')
+    if len(sys.argv) != 2:
+        print(f'Usage: {sys.argv[0]} <path/to/source/dir>')
+        sys.exit(1)
+
+    source_dir = sys.argv[1]
+    docs_folder = f'{source_dir}/docs/'
+    if not os.path.isdir(docs_folder):
+        print('Skipping settings documentation generation because the docs/ folder does not exist')
         return
 
-    generated_fp = get_temporary_file_for_generated_content('../docs/')
-    output = process_settings()
+    generated_fp = get_temporary_file_for_generated_content(docs_folder)
+    output = process_settings(f'{source_dir}/dnsdist-settings-definitions.yml')
     generated_fp.write(output)
-    os.rename(generated_fp.name, '../docs/reference/yaml-settings.rst')
+    os.rename(generated_fp.name, f'{docs_folder}/reference/yaml-settings.rst')
 
-    generated_fp = get_temporary_file_for_generated_content('../docs/')
-    output = process_selectors_or_actions('../dnsdist-actions-definitions.yml', 'action')
+    generated_fp = get_temporary_file_for_generated_content(docs_folder)
+    output = process_selectors_or_actions(f'{source_dir}/dnsdist-actions-definitions.yml', 'action')
     generated_fp.write(output)
-    os.rename(generated_fp.name, '../docs/reference/yaml-actions.rst')
+    os.rename(generated_fp.name, f'{docs_folder}/reference/yaml-actions.rst')
 
-    generated_fp = get_temporary_file_for_generated_content('../docs/')
-    output = process_selectors_or_actions('../dnsdist-response-actions-definitions.yml', 'response-action')
+    generated_fp = get_temporary_file_for_generated_content(docs_folder)
+    output = process_selectors_or_actions(f'{source_dir}/dnsdist-response-actions-definitions.yml', 'response-action')
     generated_fp.write(output)
-    os.rename(generated_fp.name, '../docs/reference/yaml-response-actions.rst')
+    os.rename(generated_fp.name, f'{docs_folder}/reference/yaml-response-actions.rst')
 
-    generated_fp = get_temporary_file_for_generated_content('../docs/')
-    output = process_selectors_or_actions('../dnsdist-selectors-definitions.yml', 'selector')
+    generated_fp = get_temporary_file_for_generated_content(docs_folder)
+    output = process_selectors_or_actions(f'{source_dir}/dnsdist-selectors-definitions.yml', 'selector')
     generated_fp.write(output)
-    os.rename(generated_fp.name, '../docs/reference/yaml-selectors.rst')
+    os.rename(generated_fp.name, f'{docs_folder}/reference/yaml-selectors.rst')
+
+    Path('.yaml-settings.stamp').touch()
 
 if __name__ == '__main__':
     main()

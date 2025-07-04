@@ -38,7 +38,9 @@
 #include "dnsdist-carbon.hh"
 #include "dnsdist-concurrent-connections.hh"
 #include "dnsdist-configuration.hh"
+#include "dnsdist-configuration-yaml.hh"
 #include "dnsdist-console.hh"
+#include "dnsdist-console-completion.hh"
 #include "dnsdist-crypto.hh"
 #include "dnsdist-dynblocks.hh"
 #include "dnsdist-dynbpf.hh"
@@ -544,6 +546,10 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
                            }
 
                            tlsCtx = getTLSContext(config.d_tlsParams);
+
+                           if (config.d_tlsParams.d_validateCertificates && config.d_tlsSubjectName.empty()) {
+                             throw std::runtime_error("Certificate validation has been requested (see 'validateCertificates') for backend " + serverAddressStr + " but neither 'subjectName' nor 'subjectAddress' are set");
+                           }
                          }
 
                          try {
@@ -1006,7 +1012,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
     return *poolServers;
   });
 
-  luaCtx.writeFunction("getServer", [client](boost::variant<unsigned int, std::string> identifier) {
+  luaCtx.writeFunction("getServer", [client](boost::variant<unsigned int, std::string> identifier) -> boost::optional<std::shared_ptr<DownstreamState>> {
     if (client) {
       return std::make_shared<DownstreamState>(ComboAddress());
     }
@@ -1020,11 +1026,15 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
       }
     }
     else if (auto* pos = boost::get<unsigned int>(&identifier)) {
-      return states.at(*pos);
+      if (*pos < states.size()) {
+        return states.at(*pos);
+      }
+      g_outputBuffer = "Error: trying to retrieve server " + std::to_string(*pos) + " while there is only " + std::to_string(states.size()) + "servers\n";
+      return boost::none;
     }
 
-    g_outputBuffer = "Error: no rule matched\n";
-    return std::shared_ptr<DownstreamState>(nullptr);
+    g_outputBuffer = "Error: no server matched\n";
+    return boost::none;
   });
 
 #ifndef DISABLE_CARBON
@@ -1589,7 +1599,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
 
   luaCtx.writeFunction("getDNSCryptBind", [](uint64_t idx) {
     setLuaNoSideEffect();
-    std::shared_ptr<DNSCryptContext> ret = nullptr;
+    boost::optional<std::shared_ptr<DNSCryptContext>> ret{boost::none};
     /* we are only interested in distinct DNSCrypt binds,
        and we have two frontends (UDP and TCP) per bind
        sharing the same context so we need to retrieve
@@ -1732,7 +1742,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
 
   luaCtx.writeFunction("getBind", [](uint64_t num) {
     setLuaNoSideEffect();
-    ClientState* ret = nullptr;
+    boost::optional<ClientState*> ret{boost::none};
     auto frontends = dnsdist::getFrontends();
     if (num < frontends.size()) {
       ret = frontends[num].get();
@@ -1749,7 +1759,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
     setLuaNoSideEffect();
     g_outputBuffer = "";
 #ifndef DISABLE_COMPLETION
-    for (const auto& keyword : dnsdist::console::getConsoleKeywords()) {
+    for (const auto& keyword : dnsdist::console::completion::getConsoleKeywords()) {
       if (!command) {
         g_outputBuffer += keyword.toString() + "\n";
       }
@@ -2474,7 +2484,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
 
 #ifdef HAVE_DNS_OVER_QUIC
   luaCtx.writeFunction("getDOQFrontend", [client](uint64_t index) {
-    std::shared_ptr<DOQFrontend> result = nullptr;
+    boost::optional<std::shared_ptr<DOQFrontend>> result{boost::none};
     if (client) {
       return result;
     }
@@ -2556,7 +2566,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
 
 #ifdef HAVE_DNS_OVER_HTTP3
   luaCtx.writeFunction("getDOH3Frontend", [client](uint64_t index) {
-    std::shared_ptr<DOH3Frontend> result = nullptr;
+    boost::optional<std::shared_ptr<DOH3Frontend>> result{boost::none};
     if (client) {
       return result;
     }
@@ -2625,7 +2635,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
   });
 
   luaCtx.writeFunction("getDOHFrontend", [client]([[maybe_unused]] uint64_t index) {
-    std::shared_ptr<DOHFrontend> result = nullptr;
+    boost::optional<std::shared_ptr<DOHFrontend>> result{boost::none};
     if (client) {
       return result;
     }
@@ -2855,7 +2865,7 @@ static void setupLuaConfig(LuaContext& luaCtx, bool client, bool configCheck)
   });
 
   luaCtx.writeFunction("getTLSFrontend", []([[maybe_unused]] uint64_t index) {
-    std::shared_ptr<TLSFrontend> result = nullptr;
+    boost::optional<std::shared_ptr<TLSFrontend>> result{boost::none};
 #ifdef HAVE_DNS_OVER_TLS
     setLuaNoSideEffect();
     try {
@@ -3186,6 +3196,7 @@ void setupLuaBindingsOnly(LuaContext& luaCtx, bool client, bool configCheck)
   setupLuaInspection(luaCtx);
   setupLuaVars(luaCtx);
   setupLuaWeb(luaCtx);
+  dnsdist::configuration::yaml::addLuaBindingsForYAMLObjects(luaCtx);
 
 #ifdef LUAJIT_VERSION
   luaCtx.executeCode(getLuaFFIWrappers());

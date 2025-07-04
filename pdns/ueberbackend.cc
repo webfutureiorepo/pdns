@@ -41,8 +41,6 @@
 
 extern StatBag S;
 
-LockGuarded<vector<UeberBackend*>> UeberBackend::d_instances;
-
 // initially we are blocked
 bool UeberBackend::d_go = false;
 bool UeberBackend::s_doANYLookupsOnly = false;
@@ -350,7 +348,7 @@ void UeberBackend::updateZoneCache()
       nettree.insert_or_assign(net, tag);
     }
   }
-  g_zoneCache.replace(nettree); // FIXME: this needs some smart pending stuff too
+  g_zoneCache.replace(std::move(nettree)); // FIXME: this needs some smart pending stuff too
 
   AuthZoneCache::ViewsMap viewsmap;
   for (auto& backend : backends) {
@@ -360,13 +358,13 @@ void UeberBackend::updateZoneCache()
       vector<ZoneName> zones;
       backend->viewListZones(view, zones);
       for (ZoneName& zone : zones) {
-        auto zonename = DNSName(zone);
+        const auto& zonename = zone.operator const DNSName&();
         auto variant = zone.getVariant();
-        viewsmap[view][zonename] = variant;
+        viewsmap[view][zonename] = std::move(variant);
       }
     }
   }
-  g_zoneCache.replace(viewsmap);
+  g_zoneCache.replace(std::move(viewsmap));
 }
 
 void UeberBackend::rediscover(string* status)
@@ -717,10 +715,6 @@ bool UeberBackend::autoPrimaryBackend(const string& ipAddr, const ZoneName& doma
 
 UeberBackend::UeberBackend(const string& pname)
 {
-  {
-    d_instances.lock()->push_back(this); // report to the static list of ourself
-  }
-
   d_cache_ttl = ::arg().asNum("query-cache-ttl");
   d_negcache_ttl = ::arg().asNum("negquery-cache-ttl");
 
@@ -791,13 +785,7 @@ void UeberBackend::alsoNotifies(const ZoneName& domain, set<string>* ips)
 
 UeberBackend::~UeberBackend()
 {
-  DLOG(g_log << Logger::Error << "UeberBackend destructor called, removing ourselves from instances, and deleting our backends" << endl);
-
-  {
-    auto instances = d_instances.lock();
-    [[maybe_unused]] auto end = remove(instances->begin(), instances->end(), this);
-    instances->resize(instances->size() - 1);
-  }
+  DLOG(g_log << Logger::Error << "UeberBackend destructor called, deleting our backends" << endl);
 
   backends.clear();
 }

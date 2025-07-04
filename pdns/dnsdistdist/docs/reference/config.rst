@@ -694,7 +694,7 @@ Servers
 
     ``qps``                                  ``number``            "Limit the number of queries per second to ``number``, when using the `firstAvailable` policy"
     ``order``                                ``number``            "The order of this server, used by the `leastOutstanding` and `firstAvailable` policies"
-    ``weight``                               ``number``            "The weight of this server, used by the `wrandom`, `whashed` and `chashed` policies, default: 1. Supported values are a minimum of 1, and a maximum of 2147483647."
+    ``weight``                               ``number``            "The weight of this server, used by the `wrandom`, `whashed`, `chashed` and `orderedWrandUntag` policies, default: 1. Supported values are a minimum of 1, and a maximum of 2147483647."
     ``udpTimeout``                           ``number``            "The timeout (in seconds) of a UDP query attempt"
     ``pool``                                 ``string|{string}``   "The pools this server belongs to (unset or empty string means default pool) as a string or table of strings"
     ``retries``                              ``number``            "The number of TCP connection attempts to the backend, for a given query"
@@ -828,6 +828,14 @@ A server object returned by :func:`getServer` can be manipulated with these func
     Get the number of dropped queries for this server.
 
     :returns: The number of dropped queries
+
+  .. method:: Server:getQueries() -> int
+
+    .. versionadded:: 2.0.0
+
+    Get the number of total queries for this server.
+
+    :returns: The number of total queries
 
   .. method:: Server:getHealthCheckMode() -> str
 
@@ -1042,6 +1050,9 @@ See :doc:`../guides/cache` for a how to.
   .. versionchanged:: 2.0.0
     ``truncatedTTL`` parameter added.
 
+  .. versionchanged:: 2.0.0
+    ``payloadRanks`` parameter added.
+
   Creates a new :class:`PacketCache` with the settings specified.
 
   :param int maxEntries: The maximum number of entries in this cache
@@ -1059,9 +1070,10 @@ See :doc:`../guides/cache` for a how to.
   * ``staleTTL=60``: int - When the backend servers are not reachable, and global configuration ``setStaleCacheEntriesTTL`` is set appropriately, TTL that will be used when a stale cache entry is returned.
   * ``temporaryFailureTTL=60``: int - On a SERVFAIL or REFUSED from the backend, cache for this amount of seconds.
   * ``truncatedTTL=0``: int - On a truncated (TC=1, no records) response from the backend, cache for this amount of seconds. 0, the default, means that truncated answers are not cached.
-  * ``cookieHashing=false``: bool - If true, EDNS Cookie values will be hashed, resulting in separate entries for different cookies in the packet cache. This is required if the backend is sending answers with EDNS Cookies, otherwise a client might receive an answer with the wrong cookie.
+  * ``cookieHashing=false``: bool - If true, EDNS Cookie values will be hashed, resulting in separate entries for different cookies in the packet cache. This is required if the backend is sending answers with EDNS Cookies; otherwise, a client might receive an answer with the wrong cookie.
   * ``skipOptions={}``: Extra list of EDNS option codes to skip when hashing the packet (if ``cookieHashing`` above is false, EDNS cookie option number will be added to this list internally).
   * ``maximumEntrySize=4096``: int - The maximum size, in bytes, of a DNS packet that can be inserted into the packet cache. Default is 4096 bytes, which was the fixed size before 1.9.0, and is also a hard limit for UDP responses.
+  * ``payloadRanks={}``: List of payload size used when hashing the packet. The list will be sorted in ascending order and searched to find a lower bound value for the payload size in the packet. If found then it will be used for packet hashing. Values less than 512 or greater than ``maximumEntrySize`` above will be discarded. This option is to enable cache entry sharing between clients using different payload sizes when needed.
 
 .. class:: PacketCache
 
@@ -2232,6 +2244,23 @@ Other functions
     end
     addMaintenanceCallback(myCallback)
 
+.. function:: addServerStateChangeCallback(callback)
+
+  .. versionadded:: 2.1.0
+
+  Register a Lua function to be called when a server state changed during the health check process.
+  The function should not block for a long period of time, as it would otherwise delay the execution of the other functions registered for this hook, as well as the execution of the health check process.
+
+  :param function callback: The function to be called. It returns no value and takes two parameters: the first parameter is a string identifying the server, formatted as if returned by :func:`Server:getNameWithAddr()`, the second parameter is a boolean value indicating whether the server is up.
+
+  .. code-block:: lua
+
+    function serverStateChanged(nameAddr, newState)
+      if newState then state = 'up' else state = 'down' end
+      print(string.format('Server State Changed: %s -> %s', nameAddr, state))
+    end
+    addServerStateChangeCallback(serverStateChanged)
+
 
 .. function:: getAddressInfo(hostname, callback)
 
@@ -2259,6 +2288,14 @@ Other functions
   Return the current time, in whole seconds and nanoseconds since epoch.
 
   :returns: A timespec object, see :ref:`timespec`
+
+.. function:: getObjectFromYAMLConfiguration
+
+  .. versionadded:: 2.0.0
+
+  Return a pointer to an object (:class:`KeyValueStore`, :class:`DNSAction`, class::`DNSRule`, ...) declared in the YAML configuration.
+
+  :param str name: The name assigned to the object in the YAML configuration
 
 .. function:: getResolvers(path)
 
@@ -2332,7 +2369,7 @@ Other functions
 
   .. versionadded:: 1.6.0
 
-  Set the maximum size of a Proxy Protocol payload that dnsdist is willing to accept, in bytes. The default is 512, which is more than enough except for very large TLV data. This setting can't be set to a value lower than 16 since it would deny of Proxy Protocol headers.
+  Set the maximum size of a Proxy Protocol payload that dnsdist is willing to accept, in bytes. The default is 512, which is more than enough except for very large TLV data. This setting can't be set to a value lower than 16 - the absolute minimum size of a Proxy Protocol header.
 
   :param int size: The maximum size in bytes (default is 512)
 

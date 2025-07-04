@@ -49,8 +49,10 @@
 #include "rust/lib.rs.h"
 #include "dnsdist-configuration-yaml-internal.hh"
 
-#include <boost/uuid/string_generator.hpp>
 #include <variant>
+#include <boost/optional.hpp>
+#include <boost/uuid/string_generator.hpp>
+#include <boost/variant.hpp>
 
 #endif /* HAVE_YAML_CONFIGURATION */
 
@@ -448,7 +450,19 @@ static std::shared_ptr<DownstreamState> createBackendFromConfiguration(const dns
   const auto& tlsConf = config.tls;
   auto protocol = boost::to_lower_copy(std::string(config.protocol));
   if (protocol == "dot" || protocol == "doh") {
+#if !defined(HAVE_DNS_OVER_TLS)
+    if (protocol == "dot") {
+      throw std::runtime_error("Backend " + std::string(config.address) + " is configured to use DNS over TLS but DoT support is not available");
+    }
+#endif /* HAVE_DNS_OVER_TLS */
+#if !defined(HAVE_DNS_OVER_HTTPS)
+    if (protocol == "doh") {
+      throw std::runtime_error("Backend " + std::string(config.address) + " is configured to use DNS over HTTPS but DoH support is not available");
+    }
+#endif /* HAVE_DNS_OVER_HTTPS */
+
     backendConfig.d_tlsParams.d_provider = std::string(tlsConf.provider);
+    boost::algorithm::to_lower(backendConfig.d_tlsParams.d_provider);
     backendConfig.d_tlsParams.d_ciphers = std::string(tlsConf.ciphers);
     backendConfig.d_tlsParams.d_ciphers13 = std::string(tlsConf.ciphers_tls_13);
     backendConfig.d_tlsParams.d_caStore = std::string(tlsConf.ca_store);
@@ -467,6 +481,9 @@ static std::shared_ptr<DownstreamState> createBackendFromConfiguration(const dns
       catch (const std::exception&) {
         errlog("Error creating new server: downstream subject_address value must be a valid IP address");
       }
+    }
+    if (backendConfig.d_tlsParams.d_validateCertificates && backendConfig.d_tlsSubjectName.empty()) {
+      throw std::runtime_error("Certificate validation has been requested for backend " + std::string(config.address) + " but neither 'subject_name' nor 'subject_address' are set");
     }
   }
 
@@ -663,6 +680,24 @@ static void loadDynamicBlockConfiguration(const dnsdist::rust::settings::Dynamic
   }
 }
 
+static void handleAdditionalAddressesForFrontend(const std::shared_ptr<ClientState>& state, const std::string& protocol, const ::rust::Vec<::rust::String>& additionalAddresses)
+{
+  if (protocol == "dot" || protocol == "doh") {
+    for (const auto& addr : additionalAddresses) {
+      try {
+        ComboAddress address{std::string(addr)};
+        state->d_additionalAddresses.emplace_back(address, -1);
+      }
+      catch (const PDNSException& e) {
+        errlog("Unable to parse additional address %s for %s bind: %s", std::string(addr), protocol, e.reason);
+      }
+    }
+  }
+  else if (!additionalAddresses.empty()) {
+    throw std::runtime_error("Passing a non-empty additional_addresses value to a " + protocol + " frontend is not supported");
+  }
+}
+
 static void loadBinds(const ::rust::Vec<dnsdist::rust::settings::BindConfiguration>& binds)
 {
   for (const auto& bind : binds) {
@@ -694,7 +729,7 @@ static void loadBinds(const ::rust::Vec<dnsdist::rust::settings::BindConfigurati
         std::shared_ptr<DNSCryptContext> dnsCryptContext;
 #endif /* defined(HAVE_DNSCRYPT) */
 
-        auto state = std::make_shared<ClientState>(listeningAddress, protocol != "doq" && protocol != "doh3", bind.reuseport, bind.tcp.fast_open_queue_size, std::string(bind.interface), cpus, false);
+        auto state = std::make_shared<ClientState>(listeningAddress, protocol != "doq" && protocol != "doh3", bind.reuseport, bind.tcp.fast_open_queue_size, std::string(bind.interface), cpus, bind.enable_proxy_protocol);
 
         if (bind.tcp.listen_queue_size > 0) {
           state->tcpListenQueueSize = bind.tcp.listen_queue_size;
@@ -706,15 +741,7 @@ static void loadBinds(const ::rust::Vec<dnsdist::rust::settings::BindConfigurati
           state->d_tcpConcurrentConnectionsLimit = bind.tcp.max_concurrent_connections;
         }
 
-        for (const auto& addr : bind.additional_addresses) {
-          try {
-            ComboAddress address{std::string(addr)};
-            state->d_additionalAddresses.emplace_back(address, -1);
-          }
-          catch (const PDNSException& e) {
-            errlog("Unable to parse additional address %s for %s bind: %s", std::string(addr), protocol, e.reason);
-          }
-        }
+        handleAdditionalAddressesForFrontend(state, protocol, bind.additional_addresses);
 
         if (protocol == "dnscrypt") {
 #if defined(HAVE_DNSCRYPT)
@@ -738,7 +765,7 @@ static void loadBinds(const ::rust::Vec<dnsdist::rust::settings::BindConfigurati
         config.d_frontends.emplace_back(std::move(state));
         if (protocol == "do53" || protocol == "dnscrypt") {
           /* also create the UDP listener */
-          state = std::make_shared<ClientState>(ComboAddress(std::string(bind.listen_address), defaultPort), false, bind.reuseport, bind.tcp.fast_open_queue_size, std::string(bind.interface), cpus, false);
+          state = std::make_shared<ClientState>(ComboAddress(std::string(bind.listen_address), defaultPort), false, bind.reuseport, bind.tcp.fast_open_queue_size, std::string(bind.interface), cpus, bind.enable_proxy_protocol);
 #if defined(HAVE_DNSCRYPT)
           state->dnscryptCtx = std::move(dnsCryptContext);
 #endif /* defined(HAVE_DNSCRYPT) */
@@ -930,6 +957,14 @@ bool loadConfigurationFromFile(const std::string& fileName, [[maybe_unused]] boo
   try {
     auto globalConfig = dnsdist::rust::settings::from_yaml_string(*data);
 
+    dnsdist::configuration::updateImmutableConfiguration([&globalConfig](dnsdist::configuration::ImmutableConfiguration& config) {
+      convertImmutableFlatSettingsFromRust(globalConfig, config);
+    });
+
+    dnsdist::configuration::updateRuntimeConfiguration([&globalConfig](dnsdist::configuration::RuntimeConfiguration& config) {
+      convertRuntimeFlatSettingsFromRust(globalConfig, config);
+    });
+
     handleLoggingConfiguration(globalConfig.logging);
 
     if (!globalConfig.console.listen_address.empty()) {
@@ -1086,6 +1121,7 @@ bool loadConfigurationFromFile(const std::string& fileName, [[maybe_unused]] boo
         .d_parseECS = cache.parse_ecs,
         .d_keepStaleData = cache.keep_stale_data,
       };
+      std::unordered_set<uint16_t> ranks;
       for (const auto& option : cache.options_to_skip) {
         settings.d_optionsToSkip.insert(pdns::checked_stoi<uint16_t>(std::string(option)));
       }
@@ -1094,6 +1130,16 @@ bool loadConfigurationFromFile(const std::string& fileName, [[maybe_unused]] boo
       }
       if (cache.maximum_entry_size >= sizeof(dnsheader)) {
         settings.d_maximumEntrySize = cache.maximum_entry_size;
+      }
+      for (const auto& rank : cache.payload_ranks) {
+        if (rank < 512 || rank > settings.d_maximumEntrySize) {
+          continue;
+        }
+        ranks.insert(rank);
+      }
+      if (!ranks.empty()) {
+        settings.d_payloadRanks.assign(ranks.begin(), ranks.end());
+        std::sort(settings.d_payloadRanks.begin(), settings.d_payloadRanks.end());
       }
       auto packetCacheObj = std::make_shared<DNSDistPacketCache>(settings);
 
@@ -1119,17 +1165,8 @@ bool loadConfigurationFromFile(const std::string& fileName, [[maybe_unused]] boo
       }
     }
 
-    dnsdist::configuration::updateImmutableConfiguration([&globalConfig](dnsdist::configuration::ImmutableConfiguration& config) {
-      convertImmutableFlatSettingsFromRust(globalConfig, config);
-    });
-
-    dnsdist::configuration::updateRuntimeConfiguration([&globalConfig](dnsdist::configuration::RuntimeConfiguration& config) {
-      convertRuntimeFlatSettingsFromRust(globalConfig, config);
-    });
-
     loadRulesConfiguration(globalConfig);
 
-    s_registeredTypesMap.lock()->clear();
     return true;
   }
   catch (const ::rust::Error& exp) {
@@ -1138,11 +1175,57 @@ bool loadConfigurationFromFile(const std::string& fileName, [[maybe_unused]] boo
   catch (const std::exception& exp) {
     errlog("Error while processing YAML configuration from file %s: %s", fileName, exp.what());
   }
-  s_registeredTypesMap.lock()->clear();
   return false;
 #else
   (void)fileName;
   throw std::runtime_error("Unsupported YAML configuration");
+#endif /* HAVE_YAML_CONFIGURATION */
+}
+
+void addLuaBindingsForYAMLObjects([[maybe_unused]] LuaContext& luaCtx)
+{
+#if defined(HAVE_YAML_CONFIGURATION)
+  using ReturnValue = boost::optional<boost::variant<std::shared_ptr<DNSDistPacketCache>, std::shared_ptr<DNSRule>, std::shared_ptr<DNSAction>, std::shared_ptr<DNSResponseAction>, std::shared_ptr<NetmaskGroup>, std::shared_ptr<KeyValueStore>, std::shared_ptr<KeyValueLookupKey>, std::shared_ptr<RemoteLoggerInterface>, std::shared_ptr<ServerPolicy>, std::shared_ptr<XSKMap>>>;
+
+  luaCtx.writeFunction("getObjectFromYAMLConfiguration", [](const std::string& name) -> ReturnValue {
+    auto map = s_registeredTypesMap.lock();
+    auto item = map->find(name);
+    if (item == map->end()) {
+      return boost::none;
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<DNSDistPacketCache>>(&item->second)) {
+      return ReturnValue(*ptr);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<dnsdist::rust::settings::DNSSelector>>(&item->second)) {
+      return ReturnValue((*ptr)->d_rule);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<dnsdist::rust::settings::DNSActionWrapper>>(&item->second)) {
+      return ReturnValue((*ptr)->d_action);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<dnsdist::rust::settings::DNSResponseActionWrapper>>(&item->second)) {
+      return ReturnValue((*ptr)->d_action);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<NetmaskGroup>>(&item->second)) {
+      return ReturnValue(*ptr);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<KeyValueStore>>(&item->second)) {
+      return ReturnValue(*ptr);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<KeyValueLookupKey>>(&item->second)) {
+      return ReturnValue(*ptr);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<RemoteLoggerInterface>>(&item->second)) {
+      return ReturnValue(*ptr);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<ServerPolicy>>(&item->second)) {
+      return ReturnValue(*ptr);
+    }
+    if (auto* ptr = std::get_if<std::shared_ptr<XSKMap>>(&item->second)) {
+      return ReturnValue(*ptr);
+    }
+
+    return boost::none;
+  });
 #endif /* HAVE_YAML_CONFIGURATION */
 }
 }
@@ -1738,9 +1821,8 @@ std::shared_ptr<DNSSelector> getByNameSelector(const ByNameSelectorConfiguration
   return dnsdist::configuration::yaml::getRegisteredTypeByName<DNSSelector>(config.selector_name);
 }
 
-// NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "dnsdist-rust-bridge-actions-generated.cc"
-// NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "dnsdist-rust-bridge-selectors-generated.cc"
+#include "dnsdist-rust-bridge-actions-generated-body.hh"
+#include "dnsdist-rust-bridge-selectors-generated-body.hh"
 }
+
 #endif /* defined(HAVE_YAML_CONFIGURATION) */
