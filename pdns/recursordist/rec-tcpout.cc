@@ -99,6 +99,7 @@ void TCPOutConnectionManager::setupOutgoingTLSConfigTables(pdns::rust::settings:
   auto table = s_outgoingTLSConfigTable.lock();
   table->d_suffixToConfig = SuffixMatchTree<pdns::rust::settings::rec::OutgoingTLSConfiguration>(); // no clear?
   table->d_netmaskToConfig.clear();
+  table->d_TLSContexts.clear();
   for (const auto& entry : vec) {
     for (const auto& element : entry.suffixes) {
       DNSName name = DNSName(std::string(element));
