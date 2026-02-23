@@ -24,27 +24,22 @@
 #include "rec-main.hh"
 
 #include "aggressive_nsec.hh"
-#include "capabilities.hh"
 #include "arguments.hh"
-#include "dns_random.hh"
-#include "rec_channel.hh"
-#include "rec-tcpout.hh"
-#include "version.hh"
-#include "query-local-address.hh"
-#include "validate-recursor.hh"
-#include "pubsuffix.hh"
-#include "opensslsigners.hh"
-#include "ws-recursor.hh"
-#include "rec-taskqueue.hh"
-#include "secpoll-recursor.hh"
-#include "logging.hh"
+#include "capabilities.hh"
 #include "dnssec.hh"
+#include "opensslsigners.hh"
+#include "pubsuffix.hh"
+#include "query-local-address.hh"
 #include "rec-rust-lib/cxxsettings.hh"
-#include "json.hh"
+#include "rec-snmp.hh"
 #include "rec-system-resolve.hh"
+#include "rec-taskqueue.hh"
+#include "rec-tcpout.hh"
 #include "root-dnssec.hh"
-#include "ratelimitedlog.hh"
-#include "rec-rust-lib/rust/web.rs.h"
+#include "secpoll-recursor.hh"
+#include "threadname.hh"
+#include "version.hh"
+#include "ws-recursor.hh"
 
 #ifdef NOD_ENABLED
 #include "nod.hh"
@@ -52,9 +47,6 @@
 
 #ifdef HAVE_LIBSODIUM
 #include <sodium.h>
-
-#include <cstddef>
-#include <utility>
 #endif
 
 #ifdef HAVE_SYSTEMD
@@ -984,7 +976,7 @@ static void checkOrFixFDS(unsigned int listeningSockets, Logr::log_t log)
   // Static part: the FDs from the start, pipes, controlsocket, web socket, listen sockets
   unsigned int staticPart = 25; // general  allowance, including control socket, web, snmp
   // Handler thread gets one pipe, the others all of them
-  staticPart += 2 + (threads - 1) * (sizeof(RecThreadInfo::ThreadPipeSet) / sizeof(int)); // number of fd's in ThreadPipeSet
+  staticPart += 2 + ((threads - 1) * (sizeof(RecThreadInfo::ThreadPipeSet) / sizeof(int))); // number of fd's in ThreadPipeSet
   // listen sockets
   staticPart += listeningSockets;
   // Another fd per thread for poll/kqueue
@@ -998,7 +990,7 @@ static void checkOrFixFDS(unsigned int listeningSockets, Logr::log_t log)
   // plus each worker thread can have a number of idle outgoing TCP connections
   perWorker += TCPOutConnectionManager::s_maxIdlePerThread;
 
-  auto wantFDs = staticPart + workers * perWorker;
+  auto wantFDs = staticPart + (workers * perWorker);
 
   if (wantFDs > availFDs) {
     unsigned int hardlimit = getFilenumLimit(true);
@@ -2383,7 +2375,7 @@ static void handlePipeRequest(int fileDesc, FDMultiplexer::funcparam_t& /* var *
 
     __tsan_release(resp);
 
-    if (write(RecThreadInfo::self().getPipes().writeFromThread, &resp, sizeof(resp)) != sizeof(resp)) {
+    if (write(RecThreadInfo::self().getPipes().writeFromThread, static_cast<void*>(&resp), sizeof(resp)) != sizeof(resp)) {
       delete tmsg; // NOLINT: manual ownership handling
       unixDie("write to thread pipe returned wrong size or error");
     }
@@ -2400,18 +2392,18 @@ static void handleRCC(int fileDesc, FDMultiplexer::funcparam_t& /* var */)
     if (clientfd == -1) {
       throw PDNSException("accept failed");
     }
-    string msg = g_rcc.recv(clientfd).d_str;
+    string msg = RecursorControlChannel::recv(clientfd).d_str;
     log->info(Logr::Info, "Received rec_control command via control socket", "command", Logging::Loggable(msg));
 
     RecursorControlParser::func_t* command = nullptr;
     auto answer = RecursorControlParser::getAnswer(clientfd, msg, &command);
 
     if (command != doExitNicely) {
-      g_rcc.send(clientfd, answer);
+      RecursorControlChannel::send(clientfd, answer);
     }
     command();
     if (command == doExitNicely) {
-      g_rcc.send(clientfd, answer);
+      RecursorControlChannel::send(clientfd, answer);
     }
   }
   catch (const std::exception& e) {
@@ -2859,7 +2851,10 @@ static void recursorThread()
       checkFrameStreamExport(luaconfsLocal, luaconfsLocal->nodFrameStreamExportConfig, t_nodFrameStreamServersInfo);
 #endif
       for (const auto& rpz : luaconfsLocal->rpzs) {
-        string name = rpz.polName.empty() ? (rpz.zoneXFRParams.primaries.empty() ? "rpzFile" : rpz.zoneXFRParams.name) : rpz.polName;
+        string name = rpz.polName;
+        if (name.empty()) {
+          name = rpz.zoneXFRParams.primaries.empty() ? "rpzFile" : rpz.zoneXFRParams.name;
+        }
         t_Counters.at(rec::PolicyNameHits::policyName).counts[name] = 0;
       }
     }
@@ -3214,9 +3209,7 @@ int main(int argc, char** argv)
     g_quiet = ::arg().mustDo("quiet");
     s_logUrgency = (Logger::Urgency)::arg().asNum("loglevel");
 
-    if (s_logUrgency < Logger::Error) {
-      s_logUrgency = Logger::Error;
-    }
+    s_logUrgency = std::max(s_logUrgency, Logger::Error);
     if (!g_quiet && s_logUrgency < Logger::Info) { // Logger::Info=6, Logger::Debug=7
       s_logUrgency = Logger::Info; // if you do --quiet=no, you need Info to also see the query log
     }
@@ -3281,7 +3274,7 @@ static RecursorControlChannel::Answer* doReloadLuaScript()
     if (fname.empty()) {
       t_pdl.reset();
       log->info(Logr::Info, "Unloaded current lua script");
-      return new RecursorControlChannel::Answer{0, string("unloaded\n")};
+      return new RecursorControlChannel::Answer{0, string("unloaded\n")}; // NOLINT: manual ownership handling
     }
 
     t_pdl = std::make_shared<RecursorLua4>();

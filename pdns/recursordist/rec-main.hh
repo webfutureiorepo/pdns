@@ -22,24 +22,18 @@
 
 #pragma once
 
-#ifdef HAVE_CONFIG_H
 #include "config.h"
-#endif
 
-#include "logger.hh"
 #include "logr.hh"
+#include "iputils.hh"
 #include "lua-recursor4.hh"
 #include "mplexer.hh"
-#include "namespaces.hh"
 #include "rec-lua-conf.hh"
 #include "rec-protozero.hh"
 #include "syncres.hh"
-#include "rec-snmp.hh"
 #include "rec_channel.hh"
-#include "threadname.hh"
 #include "recpacketcache.hh"
 #include "ratelimitedlog.hh"
-#include "protozero-trace.hh"
 #include "remote_logger.hh"
 
 #ifdef NOD_ENABLED
@@ -63,31 +57,31 @@ struct DNSComboWriter
   }
 
   // The address the query is coming from
-  void setRemote(const ComboAddress& sa)
+  void setRemote(const ComboAddress& address)
   {
-    d_remote = sa;
+    d_remote = address;
   }
 
   // The address we assume the query is coming from, might be set by proxy protocol
-  void setSource(const ComboAddress& sa)
+  void setSource(const ComboAddress& address)
   {
-    d_source = sa;
+    d_source = address;
   }
 
-  void setMappedSource(const ComboAddress& sa)
+  void setMappedSource(const ComboAddress& address)
   {
-    d_mappedSource = sa;
+    d_mappedSource = address;
   }
 
-  void setLocal(const ComboAddress& sa)
+  void setLocal(const ComboAddress& address)
   {
-    d_local = sa;
+    d_local = address;
   }
 
   // The address we assume the query is sent to, might be set by proxy protocol
-  void setDestination(const ComboAddress& sa)
+  void setDestination(const ComboAddress& address)
   {
-    d_destination = sa;
+    d_destination = address;
   }
 
   void setSocket(int sock)
@@ -167,31 +161,25 @@ extern DoneRunning g_doneRunning;
 // but after you call 'returnSocket' on it, don't assume anything anymore
 class UDPClientSocks
 {
-  unsigned int d_numsocks;
-
 public:
-  UDPClientSocks() :
-    d_numsocks(0)
-  {
-  }
-
   LWResult::Result getSocket(const ComboAddress& toaddr, const std::optional<ComboAddress>& localAddress, int* fileDesc);
 
   // return a socket to the pool, or simply erase it
   void returnSocket(int fileDesc);
 
 private:
+  unsigned int d_numsocks{0};
   // returns -1 for errors which might go away, throws for ones that won't
   static int makeClientSocket(int family, const std::optional<ComboAddress>& localAddress);
 };
 
-enum class PaddingMode
+enum class PaddingMode : uint8_t
 {
   Always,
   PaddedQueries
 };
 
-typedef MTasker<std::shared_ptr<PacketID>, PacketBuffer, PacketIDCompare> MT_t;
+using MT_t = MTasker<std::shared_ptr<PacketID>, PacketBuffer, PacketIDCompare>;
 extern thread_local std::unique_ptr<MT_t> g_multiTasker; // the big MTasker
 extern std::unique_ptr<RecursorPacketCache> g_packetCache;
 
@@ -289,7 +277,7 @@ extern thread_local FrameStreamServersInfo t_nodFrameStreamServersInfo;
 extern std::vector<bool> g_avoidUdpSourcePorts;
 
 /* without reuseport, all listeners share the same sockets */
-typedef vector<pair<int, std::function<void(int, boost::any&)>>> deferredAdd_t;
+using deferredAdd_t = vector<pair<int, std::function<void(int, boost::any&)>>>;
 
 inline MT_t* getMT()
 {
@@ -298,30 +286,30 @@ inline MT_t* getMT()
 
 /* this function is called with both a string and a vector<uint8_t> representing a packet */
 template <class T>
-static bool sendResponseOverTCP(const std::unique_ptr<DNSComboWriter>& dc, const T& packet)
+static bool sendResponseOverTCP(const std::unique_ptr<DNSComboWriter>& comboWriter, const T& packet)
 {
-  uint8_t buf[2];
+  std::array<uint8_t, 2> buf{};
   buf[0] = packet.size() / 256;
   buf[1] = packet.size() % 256;
 
-  Utility::iovec iov[2];
-  iov[0].iov_base = (void*)buf;
+  std::array<Utility::iovec, 2> iov{};
+  iov[0].iov_base = static_cast<void*>(buf.data());
   iov[0].iov_len = 2;
-  iov[1].iov_base = (void*)&*packet.begin();
+  iov[1].iov_base = static_cast<void*>(const_cast<typename T::value_type*>(packet.data()));
   iov[1].iov_len = packet.size();
 
-  int wret = Utility::writev(dc->d_socket, iov, 2);
+  int wret = Utility::writev(comboWriter->d_socket, iov.data(), iov.size());
   bool hadError = true;
 
   if (wret == 0) {
-    g_log << Logger::Warning << "EOF writing TCP answer to " << dc->getRemote() << endl;
+    g_log << Logger::Warning << "EOF writing TCP answer to " << comboWriter->getRemote() << endl;
   }
   else if (wret < 0) {
     int err = errno;
-    g_log << Logger::Warning << "Error writing TCP answer to " << dc->getRemote() << ": " << strerror(err) << endl;
+    g_log << Logger::Warning << "Error writing TCP answer to " << comboWriter->getRemote() << ": " << stringerror(err) << endl;
   }
   else if ((unsigned int)wret != 2 + packet.size()) {
-    g_log << Logger::Warning << "Oops, partial answer sent to " << dc->getRemote() << " for " << dc->d_mdp.d_qname << " (size=" << (2 + packet.size()) << ", sent " << wret << ")" << endl;
+    g_log << Logger::Warning << "Oops, partial answer sent to " << comboWriter->getRemote() << " for " << comboWriter->d_mdp.d_qname << " (size=" << (2 + packet.size()) << ", sent " << wret << ")" << endl;
   }
   else {
     hadError = false;
@@ -530,7 +518,7 @@ public:
     return deferredAdds;
   }
 
-  const ThreadPipeSet& getPipes() const
+  [[nodiscard]] const ThreadPipeSet& getPipes() const
   {
     return pipes;
   }
@@ -635,7 +623,7 @@ bool checkForCacheHit(bool qnameParsed, unsigned int tag, const string& data,
                       RecursorPacketCache::OptPBData& pbData, bool tcp, const ComboAddress& source, const ComboAddress& mappedSource);
 void protobufLogResponse(pdns::ProtoZero::RecMessage& message);
 void protobufLogResponse(const DNSName& qname, QType qtype, const struct dnsheader* header, LocalStateHolder<LuaConfigItems>& luaconfsLocal,
-                         const RecursorPacketCache::OptPBData& pbData, const struct timeval& tv,
+                         const RecursorPacketCache::OptPBData& pbData, const struct timeval& tval,
                          bool tcp, const ComboAddress& source, const ComboAddress& destination,
                          const ComboAddress& mappedSource, const EDNSSubnetOpts& ednssubnet,
                          const boost::uuids::uuid& uniqueId, const string& requestorId, const string& deviceId,
@@ -661,12 +649,12 @@ void startLuaConfigDelayedThreads(const LuaConfigItems& luaConfig, uint64_t gene
 void activateLuaConfig(LuaConfigItems& lci);
 unsigned int authWaitTimeMSec(const std::unique_ptr<MT_t>& mtasker);
 
-#define LOCAL_NETS "127.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 192.168.0.0/16, 172.16.0.0/12, ::1/128, fc00::/7, fe80::/10"
-#define LOCAL_NETS_INVERSE "!127.0.0.0/8, !10.0.0.0/8, !100.64.0.0/10, !169.254.0.0/16, !192.168.0.0/16, !172.16.0.0/12, !::1/128, !fc00::/7, !fe80::/10"
+static const std::string LOCAL_NETS = "127.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 192.168.0.0/16, 172.16.0.0/12, ::1/128, fc00::/7, fe80::/10";
+static const std::string LOCAL_NETS_INVERSE = "!127.0.0.0/8, !10.0.0.0/8, !100.64.0.0/10, !169.254.0.0/16, !192.168.0.0/16, !172.16.0.0/12, !::1/128, !fc00::/7, !fe80::/10";
 // Bad Nets taken from both:
 // http://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml
 // and
 // http://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml
 // where such a network may not be considered a valid destination
-#define BAD_NETS "0.0.0.0/8, 192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 240.0.0.0/4, ::/96, ::ffff:0:0/96, 100::/64, 2001:db8::/32"
-#define DONT_QUERY LOCAL_NETS ", " BAD_NETS
+static const std::string BAD_NETS = "0.0.0.0/8, 192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 240.0.0.0/4, ::/96, ::ffff:0:0/96, 100::/64, 2001:db8::/32";
+static const std::string DONT_QUERY = LOCAL_NETS + ", " + BAD_NETS;
