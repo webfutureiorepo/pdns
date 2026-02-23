@@ -23,7 +23,6 @@
 #include "rec-main.hh"
 
 #include "arguments.hh"
-#include "logger.hh"
 #include "mplexer.hh"
 #include "uuid-utils.hh"
 
@@ -73,17 +72,15 @@ static thread_local std::unique_ptr<tcpClientCounts_t> t_tcpClientCounts = std::
 
 static void handleRunningTCPQuestion(int fileDesc, FDMultiplexer::funcparam_t& var);
 
-#if 0
+#define REC_DEBUG_TCP 0 // NOLINT(cppcoreguidelines-macro-usage)
+#if REC_DEBUG_TCP
 #define TCPLOG(tcpsock, x)                                 \
   do {                                                     \
     cerr << []() { timeval t; gettimeofday(&t, nullptr); return t.tv_sec % 10  + t.tv_usec/1000000.0; }() << " FD " << (tcpsock) << ' ' << x; \
   } while (0)
 #else
-// We do not define this as empty since that produces a duplicate case label warning from clang-tidy
 #define TCPLOG(pid, x) /* NOLINT(cppcoreguidelines-macro-usage) */ \
-  while (false) {                                                  \
-    cerr << x; /* NOLINT(bugprone-macro-parentheses) */            \
-  }
+  ; // empty
 #endif
 
 std::atomic<uint32_t> TCPConnection::s_currentConnections;
@@ -118,6 +115,7 @@ static void terminateTCPConnection(int fileDesc)
     t_fdm->removeReadFD(fileDesc);
   }
   catch (const FDMultiplexerException& fde) {
+    ; //empty
   }
 }
 
@@ -177,6 +175,7 @@ void finishTCPReply(std::unique_ptr<DNSComboWriter>& comboWriter, bool hadError,
       t_fdm->removeReadFD(comboWriter->d_socket);
     }
     catch (FDMultiplexerException&) {
+      ; // empty
     }
     comboWriter->d_socket = -1;
     return;
@@ -558,7 +557,7 @@ static void handleRunningTCPQuestion(int fileDesc, FDMultiplexer::funcparam_t& v
          the connection was received over UDP or TCP if needed */
       bool tcp = false;
       bool proxy = false;
-      size_t used = parseProxyHeader(conn->data, proxy, conn->d_source, conn->d_destination, tcp, conn->proxyProtocolValues);
+      ssize_t used = parseProxyHeader(conn->data, proxy, conn->d_source, conn->d_destination, tcp, conn->proxyProtocolValues);
       if (used <= 0) {
         if (g_logCommonErrors) {
           g_slogtcpin->info(Logr::Error, "Unable to parse proxy protocol header in packet from TCP client", "remote", Logging::Loggable(conn->d_remote));
@@ -905,7 +904,7 @@ static void TCPIOHandlerIO(int fileDesc, FDMultiplexer::funcparam_t& var)
         g_multiTasker->sendEvent(pid, &pid->outMSG); // send back what we sent to convey everything is ok
         return;
       }
-      case IOState::NeedRead:
+      case IOState::NeedRead: // NOLINT(bugprone-branch-clone) (if !TCPLOGGing)
         TCPLOG(pid->tcpsock, "tryWrite: NeedRead" << endl);
         break;
       case IOState::NeedWrite:
