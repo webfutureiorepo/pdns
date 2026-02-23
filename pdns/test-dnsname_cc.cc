@@ -188,6 +188,14 @@ BOOST_AUTO_TEST_CASE(test_trim) {
 
   DNSName root(".");
   BOOST_CHECK_EQUAL(root.countLabels(), 0U);
+
+  w.trimToLabels(0);
+  BOOST_CHECK(w == root);
+
+  w.clear();
+  BOOST_CHECK(w.empty());
+  w.trimToLabels(0);
+  BOOST_CHECK(w.empty());
 }
 
 BOOST_AUTO_TEST_CASE(test_toolong) {
