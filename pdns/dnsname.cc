@@ -668,11 +668,19 @@ unsigned int DNSName::countLabels() const
 
 void DNSName::trimToLabels(unsigned int to)
 {
-  for (auto nlabels = countLabels(); nlabels > to; --nlabels) {
-    chopOff();
+  if (to != 0) {
+    for (auto nlabels = countLabels(); nlabels > to; --nlabels) {
+      chopOff();
+    }
+  }
+  else {
+    // If all the labels are to be removed, the result is either empty or
+    // the root zone.
+    if (!empty()) {
+      d_storage = g_rootdnsname.d_storage;
+    }
   }
 }
-
 
 size_t hash_value(DNSName const& d)
 {
