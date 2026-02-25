@@ -32,6 +32,7 @@
 #include "validate-recursor.hh"
 #include "ratelimitedlog.hh"
 #include "ednsoptions.hh"
+#include "sanitizer.hh"
 
 #ifdef HAVE_SYSTEMD
 #include <systemd/sd-daemon.h>
